@@ -13,6 +13,22 @@ def download(repo_id: str, filename: str, subdir: str = "") -> None:
         print(f"[MODEL] already exists: {target}", flush=True)
         return
 
+    # RunPod's model cache is mounted separately from ComfyUI's models directory.
+    # Only reuse the exact Eros Max file; leave other downloads unchanged.
+    if repo_id == "berryber09/10Eros-Max-h3-turbo-beta6-pruned-w4a8":
+        import glob
+        cache_root = "/runpod-volume/huggingface-cache/hub"
+        pattern = os.path.join(
+            cache_root,
+            "models--berryber09--10Eros-Max-h3-turbo-beta6-pruned-w4a8",
+            "snapshots", "*", filename,
+        )
+        for cached in glob.glob(pattern):
+            if os.path.isfile(cached) and os.path.getsize(cached) > 0:
+                os.symlink(cached, target)
+                print(f"[MODEL] linked RunPod cache: {target} -> {cached}", flush=True)
+                return
+
     print(f"[MODEL] downloading {repo_id}/{filename}", flush=True)
     hf_hub_download(
         repo_id=repo_id,
