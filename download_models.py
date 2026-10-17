@@ -4,8 +4,9 @@ from huggingface_hub import hf_hub_download
 COMFYUI_MODELS = "/workspace/ComfyUI/models"
 
 
-def download(repo_id: str, filename: str) -> None:
-    target = os.path.join(COMFYUI_MODELS, filename)
+def download(repo_id: str, filename: str, subdir: str = "") -> None:
+    local_dir = os.path.join(COMFYUI_MODELS, subdir)
+    target = os.path.join(local_dir, filename)
     os.makedirs(os.path.dirname(target), exist_ok=True)
 
     if os.path.isfile(target) and os.path.getsize(target) > 0:
@@ -16,7 +17,7 @@ def download(repo_id: str, filename: str) -> None:
     hf_hub_download(
         repo_id=repo_id,
         filename=filename,
-        local_dir=COMFYUI_MODELS,
+        local_dir=local_dir,
     )
     print(f"[MODEL] ready: {target}", flush=True)
 
@@ -25,6 +26,7 @@ def download(repo_id: str, filename: str) -> None:
 download(
     "berryber09/10Eros-Max-h3-turbo-beta6-pruned-w4a8",
     "10Eros_Max_h3_8stepTURBO_beta6_pruned_w4a8.safetensors",
+    "diffusion_models",
 )
 
 # Official MiniMax H3 NVFP4/AWQ text encoder.
