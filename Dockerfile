@@ -30,6 +30,4 @@ WORKDIR /workspace
 COPY download_models.py /workspace/download_models.py
 COPY handler.py /workspace/handler.py
 
-RUN python /workspace/download_models.py
-
 CMD ["python", "/workspace/handler.py"]
