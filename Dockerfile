@@ -29,14 +29,18 @@ WORKDIR /workspace
 
 # Bundle the optional FL2VA LoRA at build time.
 # The build fails if Civitai does not provide the actual safetensors file.
-RUN python - <<'PY'
+RUN --mount=type=secret,id=civitai_api_token python - <<'PY'
 import os
 import requests
 
+with open("/run/secrets/civitai_api_token", "r") as secret_file:
+    token = secret_file.read().strip()
+if not token:
+    raise RuntimeError("CIVITAI_API_TOKEN secret is empty")
 url = "https://civitai.com/api/download/models/3258590"
 path = "/workspace/ComfyUI/models/loras/bounceV07_fl2va-000230_Intense.safetensors"
 os.makedirs(os.path.dirname(path), exist_ok=True)
-with requests.get(url, stream=True, timeout=(30, 180)) as response:
+with requests.get(url, headers={"Authorization": f"Bearer {token}"}, stream=True, timeout=(30, 180)) as response:
     response.raise_for_status()
     with open(path, "wb") as output:
         for chunk in response.iter_content(chunk_size=1024 * 1024):
