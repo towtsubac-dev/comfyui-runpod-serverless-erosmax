@@ -290,6 +290,50 @@ def build_i2v_workflow(image_filename, prompt, width, height, length, steps, see
     }
 
 
+
+def build_t2v_workflow(prompt, width, height, length, steps, seed):
+    # Reuse the proven Eros Max sampler, model, VAE and MP4 pipeline.
+    # MiniMaxH3ImageToVideo accepts a text-only request when first_frame
+    # is omitted, as in the original H3 serverless implementation.
+    workflow = build_i2v_workflow(
+        "", prompt, width, height, length, steps, seed
+    )
+    del workflow["1"]
+    del workflow["6"]["inputs"]["first_frame"]
+    workflow["17"]["inputs"]["filename_prefix"] = "video/ErosMax_H3_T2V"
+    return workflow
+
+
+def h3_t2v_generate(job_input):
+    ensure_comfyui()
+    prompt = job_input.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise ValueError("Missing input.prompt.")
+
+    width = int(job_input.get("width", DEFAULT_WIDTH))
+    height = int(job_input.get("height", DEFAULT_HEIGHT))
+    length = int(job_input.get("length", DEFAULT_LENGTH))
+    steps = int(job_input.get("steps", DEFAULT_STEPS))
+    seed = int(job_input.get(
+        "seed", int.from_bytes(os.urandom(8), "big") % 10_000_000_000
+    ))
+
+    workflow = build_t2v_workflow(
+        prompt, width, height, length, steps, seed
+    )
+    prompt_id = queue_prompt(workflow)
+    history = wait_for_result(prompt_id)
+
+    outputs = []
+    for item in extract_outputs(history):
+        outputs.append({
+            "type": item["type"],
+            "filename": item["filename"],
+            "data": download_output(item),
+        })
+    return {"prompt_id": prompt_id, "outputs": outputs, "mode": "t2v", "seed": seed}
+
+
 def h3_check():
     ensure_comfyui()
     files = {
@@ -363,7 +407,7 @@ def h3_generate(job_input):
             "data": download_output(item),
         })
 
-    return {"prompt_id": prompt_id, "outputs": outputs}
+    return {"prompt_id": prompt_id, "outputs": outputs, "mode": "i2v", "seed": seed}
 
 
 def handler(job):
@@ -376,8 +420,10 @@ def handler(job):
             return {"status": "ok", "message": "ComfyUI is running", "system_stats": requests.get(f"{COMFYUI_URL}/system_stats", timeout=30).json()}
         if action == "h3_check":
             return h3_check()
-        if action in {"h3_generate", "generate"}:
+        if action in {"h3_generate", "h3_i2v_generate", "generate"}:
             return h3_generate(job_input)
+        if action in {"h3_t2v_generate", "t2v_generate"}:
+            return h3_t2v_generate(job_input)
         raise ValueError(f"Unsupported action: {action}")
     except Exception as exc:
         print(f"[ErosMax] ERROR: {exc}", flush=True)
