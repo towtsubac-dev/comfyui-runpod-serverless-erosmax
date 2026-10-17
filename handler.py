@@ -164,6 +164,69 @@ def download_output(item):
     return base64.b64encode(response.content).decode("utf-8")
 
 
+
+LORA_FILENAME = "bounceV07_fl2va-000230_Intense.safetensors"
+LORA_VERSION_ID = 3258590
+
+
+def optional_lora(job_input):
+    """Download and enable the selected LoRA only when explicitly requested."""
+    selection = job_input.get("lora", "none")
+    if selection in (None, "none", False):
+        return None
+    if selection != "bounce_fl2va":
+        raise ValueError("input.lora must be 'none' or 'bounce_fl2va'.")
+    strength = float(job_input.get("lora_strength", 0.8))
+    if not 0 <= strength <= 2:
+        raise ValueError("input.lora_strength must be between 0 and 2.")
+
+    folder = os.path.join(COMFYUI_DIR, "models", "loras")
+    os.makedirs(folder, exist_ok=True)
+    target = os.path.join(folder, LORA_FILENAME)
+    if not os.path.isfile(target) or os.path.getsize(target) == 0:
+        url = f"https://civitai.com/api/download/models/{LORA_VERSION_ID}"
+        headers = {}
+        token = os.environ.get("CIVITAI_API_TOKEN", "").strip()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        temp = target + ".part"
+        try:
+            with requests.get(url, headers=headers, stream=True, timeout=(20, 120)) as response:
+                response.raise_for_status()
+                with open(temp, "wb") as output:
+                    for chunk in response.iter_content(chunk_size=1024 * 1024):
+                        if chunk:
+                            output.write(chunk)
+            with open(temp, "rb") as downloaded:
+                header = downloaded.read(8)
+                if len(header) != 8:
+                    raise RuntimeError("LoRA download was empty or incomplete.")
+                header_size = int.from_bytes(header, "little")
+                if not 0 < header_size < 100_000_000:
+                    raise RuntimeError("LoRA download was not a valid safetensors file.")
+            os.replace(temp, target)
+            print(f"[LoRA] downloaded: {LORA_FILENAME}", flush=True)
+        finally:
+            if os.path.exists(temp):
+                os.remove(temp)
+    return {"filename": LORA_FILENAME, "strength": strength}
+
+
+def apply_optional_lora(workflow, lora):
+    if lora is None:
+        return workflow
+    workflow["18"] = {
+        "class_type": "LoraLoaderModelOnly",
+        "inputs": {
+            "model": ["2", 0],
+            "lora_name": lora["filename"],
+            "strength_model": lora["strength"],
+        },
+    }
+    workflow["8"]["inputs"]["model"] = ["18", 0]
+    return workflow
+
+
 def build_i2v_workflow(image_filename, prompt, width, height, length, steps, seed):
     return {
         "1": {
@@ -321,6 +384,7 @@ def h3_t2v_generate(job_input):
     workflow = build_t2v_workflow(
         prompt, width, height, length, steps, seed
     )
+    workflow = apply_optional_lora(workflow, optional_lora(job_input))
     prompt_id = queue_prompt(workflow)
     history = wait_for_result(prompt_id)
 
