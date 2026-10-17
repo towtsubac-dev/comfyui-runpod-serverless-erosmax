@@ -518,6 +518,7 @@ def h3_generate(job_input):
 
     uploaded = upload_image(image_bytes, f"runpod_erosmax_{uuid.uuid4().hex}.png")
     workflow = build_i2v_workflow(uploaded, prompt, width, height, length, steps, seed)
+    workflow = apply_optional_lora(workflow, optional_lora(job_input))
     prompt_id = queue_prompt(workflow)
     history = wait_for_result(prompt_id)
 
