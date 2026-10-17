@@ -3,7 +3,7 @@ name: Build Docker Image
 on:
   push:
     branches:
-      - main
+      - cachetest
   workflow_dispatch:
 
 env:
@@ -34,5 +34,4 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/comfyui-runpod-serverless-erosmax:latest
-            ghcr.io/${{ github.repository_owner }}/comfyui-runpod-serverless-erosmax:v1
+            ghcr.io/${{ github.repository_owner }}/comfyui-runpod-serverless-erosmax:cachetest
