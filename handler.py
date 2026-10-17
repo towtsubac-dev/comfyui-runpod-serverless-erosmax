@@ -334,6 +334,64 @@ def h3_t2v_generate(job_input):
     return {"prompt_id": prompt_id, "outputs": outputs, "mode": "t2v", "seed": seed}
 
 
+
+def cache_check():
+    """Inspect cache locations without downloading or modifying models."""
+    import glob
+
+    roots = {
+        "runpod_model_cache": "/runpod-volume/huggingface-cache/hub",
+        "huggingface_cache": os.environ.get(
+            "HF_HOME", os.path.expanduser("~/.cache/huggingface")
+        ),
+        "comfyui_models": f"{COMFYUI_DIR}/models",
+    }
+    filenames = {
+        "diffusion_model": DIFFUSION_MODEL,
+        "text_encoder": TEXT_ENCODER,
+        "video_vae": VIDEO_VAE,
+        "audio_vae": AUDIO_VAE,
+    }
+    locations = {}
+    for key, root in roots.items():
+        locations[key] = {
+            "path": root,
+            "exists": os.path.isdir(root),
+        }
+
+    models = {}
+    for key, filename in filenames.items():
+        subdir = {
+            "diffusion_model": "diffusion_models",
+            "text_encoder": "text_encoders",
+            "video_vae": "vae",
+            "audio_vae": "vae",
+        }[key]
+        local_path = os.path.join(COMFYUI_DIR, "models", subdir, filename)
+        local_exists = os.path.isfile(local_path)
+        matches = []
+        for cache_root in (
+            "/runpod-volume/huggingface-cache/hub",
+            os.path.join(roots["huggingface_cache"], "hub"),
+        ):
+            if not os.path.isdir(cache_root):
+                continue
+            # HF hub snapshots may store symlinks to cached blobs.
+            pattern = os.path.join(cache_root, "models--*", "snapshots", "*", "**", filename)
+            for path in glob.glob(pattern, recursive=True)[:5]:
+                matches.append({
+                    "path": path,
+                    "size_bytes": os.path.getsize(path),
+                })
+        models[key] = {
+            "local_path": local_path,
+            "local_exists": local_exists,
+            "local_size_bytes": os.path.getsize(local_path) if local_exists else 0,
+            "cache_matches": matches,
+        }
+    return {"status": "ok", "locations": locations, "models": models}
+
+
 def h3_check():
     ensure_comfyui()
     files = {
@@ -420,6 +478,8 @@ def handler(job):
             return {"status": "ok", "message": "ComfyUI is running", "system_stats": requests.get(f"{COMFYUI_URL}/system_stats", timeout=30).json()}
         if action == "h3_check":
             return h3_check()
+        if action == "cache_check":
+            return cache_check()
         if action in {"h3_generate", "h3_i2v_generate", "generate"}:
             return h3_generate(job_input)
         if action in {"h3_t2v_generate", "t2v_generate"}:
