@@ -20,10 +20,15 @@ RUN git clone --depth 1 \
     https://github.com/comfyanonymous/ComfyUI.git \
     /workspace/ComfyUI
 
+# H3 video-context extension nodes (test branch only)
+RUN git clone --depth 1 https://github.com/kat3ri/ComfyUI-MiniMax-H3-Extend.git /workspace/ComfyUI/custom_nodes/ComfyUI-MiniMax-H3-Extend
+RUN git clone --depth 1 https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git /workspace/ComfyUI/custom_nodes/ComfyUI-VideoHelperSuite
+
 WORKDIR /workspace/ComfyUI
 
 RUN pip install --break-system-packages -r requirements.txt
 RUN pip install --break-system-packages runpod requests huggingface_hub hf_transfer
+RUN pip install --break-system-packages -r /workspace/ComfyUI/custom_nodes/ComfyUI-VideoHelperSuite/requirements.txt
 
 WORKDIR /workspace
 
