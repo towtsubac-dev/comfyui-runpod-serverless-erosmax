@@ -1,4 +1,5 @@
 import base64
+import json
 import os
 import subprocess
 import time
@@ -533,6 +534,327 @@ def h3_generate(job_input):
     return {"prompt_id": prompt_id, "outputs": outputs, "mode": "i2v", "seed": seed}
 
 
+# Test-only video-context extension. Requires custom nodes installed by test Dockerfile.
+def _probe_video(path):
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-count_frames",
+            "-show_entries", "stream=width,height,nb_read_frames,codec_type",
+            "-show_entries", "format=duration",
+            "-of", "json", path,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    data = json.loads(result.stdout)
+    streams = data.get("streams", [])
+    video_stream = next((s for s in streams if s.get("codec_type") == "video"), None)
+    if video_stream is None:
+        raise ValueError("The uploaded file does not contain a video stream.")
+    audio_stream = next((s for s in streams if s.get("codec_type") == "audio"), None)
+    duration = float(data.get("format", {}).get("duration", 0) or 0)
+    frames = int(video_stream.get("nb_read_frames") or round(duration * 24))
+    return {
+        "width": int(video_stream["width"]),
+        "height": int(video_stream["height"]),
+        "frames": frames,
+        "duration": duration,
+        "has_audio": audio_stream is not None,
+    }
+
+
+def _normalize_video_for_concat(source, destination, width, height):
+    info = _probe_video(source)
+    video_filter = (
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
+        "fps=24,setsar=1,format=yuv420p"
+    )
+    cmd = ["ffmpeg", "-y", "-i", source]
+    if info["has_audio"]:
+        cmd += [
+            "-map", "0:v:0", "-map", "0:a:0",
+            "-vf", video_filter,
+            "-af", "aresample=32000:async=1:first_pts=0",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "32000", "-ac", "2",
+            "-shortest", "-movflags", "+faststart", destination,
+        ]
+    else:
+        cmd += [
+            "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=32000",
+            "-map", "0:v:0", "-map", "1:a:0",
+            "-vf", video_filter,
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "32000", "-ac", "2",
+            "-shortest", "-movflags", "+faststart", destination,
+        ]
+    subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=300)
+
+
+def _concat_extended_video(original_path, segment_path, output_path):
+    info = _probe_video(original_path)
+    work_dir = os.path.dirname(output_path)
+    normalized_original = os.path.join(work_dir, "normalized_original.mp4")
+    normalized_segment = os.path.join(work_dir, "normalized_segment.mp4")
+    _normalize_video_for_concat(
+        original_path, normalized_original, info["width"], info["height"]
+    )
+    _normalize_video_for_concat(
+        segment_path, normalized_segment, info["width"], info["height"]
+    )
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-i", normalized_original,
+            "-i", normalized_segment,
+            "-filter_complex",
+            "[0:v:0][0:a:0][1:v:0][1:a:0]concat=n=2:v=1:a=1[outv][outa]",
+            "-map", "[outv]", "-map", "[outa]",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "32000", "-ac", "2",
+            "-movflags", "+faststart", output_path,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    for path in (normalized_original, normalized_segment):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+
+def build_h3_extend_workflow(video_filename, prompt, length, skip_first_frames,
+                             frame_load_cap, steps=DEFAULT_STEPS, seed=None,
+                             optional_loras=None):
+    if seed is None:
+        seed = int.from_bytes(os.urandom(8), "big") % 10_000_000_000
+
+    workflow = {
+        "1": {
+            "class_type": "VHS_LoadVideo",
+            "inputs": {
+                "video": video_filename,
+                "force_rate": 24,
+                "custom_width": 0,
+                "custom_height": 0,
+                "frame_load_cap": frame_load_cap,
+                "skip_first_frames": skip_first_frames,
+                "select_every_nth": 1,
+                "format": "AnimateDiff",
+            },
+        },
+        "2": {
+            "class_type": "UNETLoader",
+            "inputs": {"unet_name": DIFFUSION_MODEL, "weight_dtype": "default"},
+        },
+        "3": {
+            "class_type": "CLIPLoader",
+            "inputs": {"clip_name": TEXT_ENCODER, "type": "minimax", "device": "default"},
+        },
+        "4": {
+            "class_type": "VAELoader",
+            "inputs": {"vae_name": VIDEO_VAE},
+        },
+        "5": {
+            "class_type": "VAELoader",
+            "inputs": {"vae_name": AUDIO_VAE},
+        },
+        "6": {
+            "class_type": "MiniMaxH3EncodeAVPatched",
+            "inputs": {
+                "vae": ["4", 0],
+                "images": ["1", 0],
+                "audio_vae": ["5", 0],
+                "audio": ["1", 2],
+            },
+        },
+        "7": {
+            "class_type": "MiniMaxH3VideoExtendPatched",
+            "inputs": {
+                "clip": ["3", 0],
+                "vae": ["4", 0],
+                "context_latent": ["6", 0],
+                "audio_vae": ["5", 0],
+                "prompt": prompt,
+                "length": length,
+                "context_frames": 2,
+                "pin_last_frame": True,
+            },
+        },
+        "8": {
+            "class_type": "MiniMaxH3SigmaShift",
+            "inputs": {
+                "model": ["2", 0],
+                "shift_video": DEFAULT_SHIFT_VIDEO,
+                "shift_audio": DEFAULT_SHIFT_AUDIO,
+            },
+        },
+        "10": {
+            "class_type": "KSamplerSelect",
+            "inputs": {"sampler_name": "res_multistep"},
+        },
+        "11": {
+            "class_type": "BasicScheduler",
+            "inputs": {
+                "model": ["8", 0],
+                "scheduler": "simple",
+                "steps": steps,
+                "denoise": 1.0,
+            },
+        },
+        "12": {
+            "class_type": "BasicGuider",
+            "inputs": {"model": ["8", 0], "conditioning": ["7", 0]},
+        },
+        "13": {
+            "class_type": "RandomNoise",
+            "inputs": {"noise_seed": seed},
+        },
+        "14": {
+            "class_type": "SamplerCustomAdvanced",
+            "inputs": {
+                "noise": ["13", 0],
+                "guider": ["12", 0],
+                "sampler": ["10", 0],
+                "sigmas": ["11", 0],
+                "latent_image": ["7", 1],
+            },
+        },
+        "15": {
+            "class_type": "VAEDecode",
+            "inputs": {"samples": ["14", 0], "vae": ["4", 0]},
+        },
+        "16": {
+            "class_type": "VAEDecodeAudio",
+            "inputs": {"samples": ["14", 0], "vae": ["5", 0]},
+        },
+        "17": {
+            "class_type": "CreateVideo",
+            "inputs": {"images": ["15", 0], "audio": ["16", 0], "fps": 24, "bit_depth": 8},
+        },
+        "18": {
+            "class_type": "SaveVideo",
+            "inputs": {
+                "video": ["17", 0],
+                "filename_prefix": f"video/H3_Extend_{uuid.uuid4().hex}",
+                "format": "mp4",
+                "codec": "h264",
+            },
+        },
+    }
+
+    if optional_loras:
+        workflow["19"] = {"class_type": "LoraLoaderModelOnly", "inputs": {"model": ["8", 0], "lora_name": optional_loras["filename"], "strength_model": optional_loras["strength"]}}
+        workflow["11"]["inputs"]["model"] = ["19", 0]
+        workflow["12"]["inputs"]["model"] = ["19", 0]
+
+    return workflow
+
+
+
+def h3_extend_generate(job_input):
+    import json
+    import tempfile
+    ensure_comfyui()
+    prompt = str(job_input.get("prompt", "")).strip()
+    if not prompt:
+        raise ValueError("Missing input.prompt.")
+    seconds = int(job_input.get("extend_seconds", 5))
+    if seconds != 5:
+        raise ValueError("ErosMax extension test supports 5 seconds only.")
+    video_url = job_input.get("video_url")
+    video_b64 = job_input.get("video")
+    if not video_url and not video_b64:
+        raise ValueError("Missing input.video or input.video_url.")
+    with tempfile.TemporaryDirectory(prefix="eros_extend_") as temp_dir:
+        if video_url:
+            from urllib.parse import urlparse
+            parsed = urlparse(video_url)
+            if parsed.scheme != "https" or not parsed.hostname:
+                raise ValueError("input.video_url must be an HTTPS URL.")
+            response = requests.get(video_url, timeout=90)
+            response.raise_for_status()
+            video_bytes = response.content
+        else:
+            video_bytes = base64.b64decode(str(video_b64).split(",")[-1], validate=True)
+        if not video_bytes or len(video_bytes) > 100 * 1024 * 1024:
+            raise ValueError("Input video must be 1-100 MiB.")
+        job_id = uuid.uuid4().hex
+        filename = f"eros_extend_{job_id}.mp4"
+        input_path = os.path.join(COMFYUI_DIR, "input", filename)
+        os.makedirs(os.path.dirname(input_path), exist_ok=True)
+        try:
+            with open(input_path, "wb") as file:
+                file.write(video_bytes)
+            info = _probe_video(input_path)
+            if info["duration"] <= 0 or info["duration"] > 120:
+                raise ValueError("Input video duration must be 0-120 seconds.")
+            if info["width"] % 16 or info["height"] % 16:
+                raise ValueError("Input video dimensions must be divisible by 16.")
+            frame_cap = min(81, max(2, info["frames"]))
+            skip = max(0, info["frames"] - frame_cap)
+            seed = int(job_input.get("seed", int.from_bytes(os.urandom(8), "big") % 10_000_000_000))
+            workflow = build_h3_extend_workflow(filename, prompt, 124, skip, frame_cap, steps=8, seed=seed, optional_loras=optional_lora(job_input))
+            prompt_id = queue_prompt(workflow)
+            record = wait_for_result(prompt_id)
+            outputs = [item for item in extract_outputs(record) if item["filename"].lower().endswith(".mp4")]
+            if not outputs:
+                # Test-only diagnostics: capture the actual ComfyUI output structure.
+                # Do not include input video bytes or prompt text in the error.
+                node_outputs = record.get("outputs", {})
+                diagnostics = {
+                    "prompt_id": prompt_id,
+                    "comfy_status": record.get("status", {}).get("status_str"),
+                    "messages": [
+                        {"event": event, "details": (
+                            {k: v for k, v in details.items()
+                             if k in ("node_id", "node_type", "exception_type", "exception_message")}
+                            if isinstance(details, dict) else str(details)[:300]
+                        )}
+                        for event, details in record.get("status", {}).get("messages", [])[-12:]
+                    ],
+                    "output_nodes": {
+                        str(node_id): {
+                            "keys": list(value.keys()) if isinstance(value, dict) else [],
+                            "files": [
+                                {"key": key, "filename": item.get("filename"), "type": item.get("type")}
+                                for key in ("videos", "gifs", "images")
+                                for item in ((value.get(key) or []) if isinstance(value, dict) else [])
+                                if isinstance(item, dict)
+                            ][:10],
+                        }
+                        for node_id, value in node_outputs.items()
+                    },
+                    "extracted_files": extract_outputs(record),
+                }
+                print("[ErosMax] Extension missing MP4: " + json.dumps(diagnostics, ensure_ascii=False)[:12000], flush=True)
+                raise RuntimeError("Extension completed without MP4 output. Diagnostics: " + json.dumps(diagnostics, ensure_ascii=False)[:9000])
+            segment = outputs[-1]
+            segment_b64 = download_output(segment)
+            segment_path = os.path.join(temp_dir, "segment.mp4")
+            with open(segment_path, "wb") as file:
+                file.write(base64.b64decode(segment_b64))
+            combined = os.path.join(temp_dir, "extended.mp4")
+            _concat_extended_video(input_path, segment_path, combined)
+            with open(combined, "rb") as file:
+                result_b64 = base64.b64encode(file.read()).decode("ascii")
+            return {"status": "ok", "mode": "extend", "prompt_id": prompt_id, "outputs": [{"type": "videos", "filename": f"ErosMax_Extended_{job_id}.mp4", "data": result_b64}]}
+        finally:
+            if os.path.isfile(input_path):
+                os.remove(input_path)
+
+
 def handler(job):
     job_input = job.get("input", {})
     action = job_input.get("action", "h3_generate")
@@ -543,6 +865,8 @@ def handler(job):
             return {"status": "ok", "message": "ComfyUI is running", "system_stats": requests.get(f"{COMFYUI_URL}/system_stats", timeout=30).json()}
         if action == "h3_check":
             return h3_check()
+        if action == "h3_extend_generate":
+            return h3_extend_generate(job_input)
         if action == "cache_check":
             return cache_check()
         if action in {"h3_generate", "h3_i2v_generate", "generate"}:
