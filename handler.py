@@ -810,7 +810,36 @@ def h3_extend_generate(job_input):
             record = wait_for_result(prompt_id)
             outputs = [item for item in extract_outputs(record) if item["type"] == "videos"]
             if not outputs:
-                raise RuntimeError("Extension completed without MP4 output.")
+                # Test-only diagnostics: capture the actual ComfyUI output structure.
+                # Do not include input video bytes or prompt text in the error.
+                node_outputs = record.get("outputs", {})
+                diagnostics = {
+                    "prompt_id": prompt_id,
+                    "comfy_status": record.get("status", {}).get("status_str"),
+                    "messages": [
+                        {"event": event, "details": (
+                            {k: v for k, v in details.items()
+                             if k in ("node_id", "node_type", "exception_type", "exception_message")}
+                            if isinstance(details, dict) else str(details)[:300]
+                        )}
+                        for event, details in record.get("status", {}).get("messages", [])[-12:]
+                    ],
+                    "output_nodes": {
+                        str(node_id): {
+                            "keys": list(value.keys()) if isinstance(value, dict) else [],
+                            "files": [
+                                {"key": key, "filename": item.get("filename"), "type": item.get("type")}
+                                for key in ("videos", "gifs", "images")
+                                for item in ((value.get(key) or []) if isinstance(value, dict) else [])
+                                if isinstance(item, dict)
+                            ][:10],
+                        }
+                        for node_id, value in node_outputs.items()
+                    },
+                    "extracted_files": extract_outputs(record),
+                }
+                print("[ErosMax] Extension missing MP4: " + json.dumps(diagnostics, ensure_ascii=False)[:12000], flush=True)
+                raise RuntimeError("Extension completed without MP4 output. Diagnostics: " + json.dumps(diagnostics, ensure_ascii=False)[:9000])
             segment = outputs[-1]
             segment_b64 = download_output(segment)
             segment_path = os.path.join(temp_dir, "segment.mp4")
