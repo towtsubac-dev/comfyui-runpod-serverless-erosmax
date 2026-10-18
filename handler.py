@@ -808,7 +808,7 @@ def h3_extend_generate(job_input):
             workflow = build_h3_extend_workflow(filename, prompt, 124, skip, frame_cap, steps=8, seed=seed, optional_loras=optional_lora(job_input))
             prompt_id = queue_prompt(workflow)
             record = wait_for_result(prompt_id)
-            outputs = [item for item in extract_outputs(record) if item["type"] == "videos"]
+            outputs = [item for item in extract_outputs(record) if item["filename"].lower().endswith(".mp4")]
             if not outputs:
                 # Test-only diagnostics: capture the actual ComfyUI output structure.
                 # Do not include input video bytes or prompt text in the error.
