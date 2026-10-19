@@ -170,16 +170,70 @@ LORA_FILENAME = "bounceV07_fl2va-000230_Intense.safetensors"
 LORA_VERSION_ID = 3258590
 
 
+def download_r2_lora(job_input, strength):
+    """Fetch one authorized R2 LoRA; never accept arbitrary download hosts."""
+    from urllib.parse import urlsplit
+    import hashlib
+    import tempfile
+
+    url = job_input.get("lora_download_url")
+    key = job_input.get("lora_key")
+    if not isinstance(url, str) or not isinstance(key, str):
+        raise ValueError("R2 LoRA requires lora_key and lora_download_url.")
+    if not __import__("re").fullmatch(r"loras/[0-9a-f]{8}-[0-9a-f-]{27,36}\\.safetensors", key):
+        raise ValueError("Invalid R2 LoRA key.")
+    parsed = urlsplit(url)
+    if (parsed.scheme != "https" or not parsed.hostname or
+            not parsed.hostname.endswith(".r2.cloudflarestorage.com") or
+            parsed.username or parsed.password or parsed.port not in (None, 443) or
+            parsed.fragment):
+        raise ValueError("Invalid R2 LoRA download host.")
+    if not parsed.path.endswith("/" + key):
+        raise ValueError("R2 LoRA URL does not match the requested key.")
+    folder = os.path.join(COMFYUI_DIR, "models", "loras")
+    os.makedirs(folder, exist_ok=True)
+    filename = "r2_" + hashlib.sha256(key.encode()).hexdigest()[:24] + ".safetensors"
+    target = os.path.join(folder, filename)
+    if os.path.isfile(target) and os.path.getsize(target) >= 16:
+        return {"filename": filename, "strength": strength}
+    temp = target + ".part"
+    max_bytes = 1024 * 1024 * 1024
+    total = 0
+    try:
+        with requests.get(url, stream=True, timeout=(20, 180), allow_redirects=False) as response:
+            response.raise_for_status()
+            if response.is_redirect:
+                raise ValueError("R2 LoRA redirects are not allowed.")
+            with open(temp, "wb") as output:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        total += len(chunk)
+                        if total > max_bytes:
+                            raise ValueError("R2 LoRA exceeds 1 GiB.")
+                        output.write(chunk)
+        with open(temp, "rb") as downloaded:
+            header = downloaded.read(8)
+            if len(header) != 8 or not 0 < int.from_bytes(header, "little") < 100_000_000:
+                raise ValueError("Invalid safetensors header.")
+        os.replace(temp, target)
+    finally:
+        if os.path.exists(temp):
+            os.remove(temp)
+    return {"filename": filename, "strength": strength}
+
+
 def optional_lora(job_input):
-    """Download and enable the selected LoRA only when explicitly requested."""
+    """Keep the bundled LoRA working; additionally support one R2-backed LoRA."""
     selection = job_input.get("lora", "none")
     if selection in (None, "none", False):
         return None
-    if selection != "bounce_fl2va":
-        raise ValueError("input.lora must be 'none' or 'bounce_fl2va'.")
+    if selection not in ("bounce_fl2va", "r2_lora"):
+        raise ValueError("input.lora must be none, bounce_fl2va or r2_lora.")
     strength = float(job_input.get("lora_strength", 0.8))
     if not 0 <= strength <= 2:
         raise ValueError("input.lora_strength must be between 0 and 2.")
+    if selection == "r2_lora":
+        return download_r2_lora(job_input, strength)
 
     folder = os.path.join(COMFYUI_DIR, "models", "loras")
     os.makedirs(folder, exist_ok=True)
