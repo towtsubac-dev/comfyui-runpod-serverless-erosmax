@@ -58,6 +58,34 @@ with open(path, "rb") as downloaded:
 print("[LoRA] bundled in Docker image:", os.path.getsize(path), "bytes", flush=True)
 PY
 
+# Bundle Mystic XXX V4 alongside the existing Bounce LoRA.
+RUN --mount=type=secret,id=civitai_api_token python - <<'PY'
+import hashlib
+import os
+import requests
+
+with open("/run/secrets/civitai_api_token", "r") as secret_file:
+    token = secret_file.read().strip()
+if not token:
+    raise RuntimeError("CIVITAI_API_TOKEN secret is empty")
+url = "https://civitai.com/api/download/models/3266628"
+path = "/workspace/ComfyUI/models/loras/MysticXXX_MMH3-V4.safetensors"
+expected_sha256 = "fc3e856d14c6c19557c888f48662d591e4794e281233ec0d987be5003068afba"
+os.makedirs(os.path.dirname(path), exist_ok=True)
+hasher = hashlib.sha256()
+with requests.get(url, headers={"Authorization": f"Bearer {token}"}, stream=True, timeout=(30, 180)) as response:
+    response.raise_for_status()
+    with open(path, "wb") as output:
+        for chunk in response.iter_content(chunk_size=1024 * 1024):
+            if chunk:
+                hasher.update(chunk)
+                output.write(chunk)
+if hasher.hexdigest().lower() != expected_sha256:
+    os.remove(path)
+    raise RuntimeError("Mystic XXX V4 download SHA256 mismatch")
+print("[LoRA] Mystic XXX V4 bundled:", os.path.getsize(path), "bytes", flush=True)
+PY
+
 COPY download_models.py /workspace/download_models.py
 COPY handler.py /workspace/handler.py
 
