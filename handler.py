@@ -771,8 +771,8 @@ def h3_extend_generate(job_input):
     if not prompt:
         raise ValueError("Missing input.prompt.")
     seconds = int(job_input.get("extend_seconds", 5))
-    if seconds != 5:
-        raise ValueError("ErosMax extension test supports 5 seconds only.")
+    if seconds not in (3, 5, 8, 10):
+        raise ValueError("ErosMax extension supports 3, 5, 8 or 10 seconds.")
     video_url = job_input.get("video_url")
     video_b64 = job_input.get("video")
     if not video_url and not video_b64:
@@ -805,7 +805,7 @@ def h3_extend_generate(job_input):
             frame_cap = min(81, max(2, info["frames"]))
             skip = max(0, info["frames"] - frame_cap)
             seed = int(job_input.get("seed", int.from_bytes(os.urandom(8), "big") % 10_000_000_000))
-            workflow = build_h3_extend_workflow(filename, prompt, 124, skip, frame_cap, steps=8, seed=seed, optional_loras=optional_lora(job_input))
+            workflow = build_h3_extend_workflow(filename, prompt, {3: 76, 5: 124, 8: 196, 10: 244}[seconds], skip, frame_cap, steps=8, seed=seed, optional_loras=optional_lora(job_input))
             prompt_id = queue_prompt(workflow)
             record = wait_for_result(prompt_id)
             outputs = [item for item in extract_outputs(record) if item["filename"].lower().endswith(".mp4")]
