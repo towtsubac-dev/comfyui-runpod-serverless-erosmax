@@ -180,7 +180,7 @@ def download_r2_lora(job_input, strength):
     key = job_input.get("lora_key")
     if not isinstance(url, str) or not isinstance(key, str):
         raise ValueError("R2 LoRA requires lora_key and lora_download_url.")
-    if not __import__("re").fullmatch(r"loras/[0-9a-f]{8}-[0-9a-f-]{27,36}\\.safetensors", key):
+    if not __import__("re").fullmatch(r"loras/[0-9a-f]{8}-[0-9a-f-]{27,36}\.safetensors", key):
         raise ValueError("Invalid R2 LoRA key.")
     parsed = urlsplit(url)
     if (parsed.scheme != "https" or not parsed.hostname or
