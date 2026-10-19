@@ -166,65 +166,96 @@ def download_output(item):
 
 
 
-LORA_FILENAME = "bounceV07_fl2va-000230_Intense.safetensors"
-LORA_VERSION_ID = 3258590
+LORA_SPECS = {
+    "bounce_fl2va": {
+        "filename": "bounceV07_fl2va-000230_Intense.safetensors",
+        "version_id": 3258590,
+        "default_strength": 0.8,
+    },
+    "mystic_xxx_v4": {
+        "filename": "MysticXXX_MMH3-V4.safetensors",
+        "version_id": 3266628,
+        "default_strength": 1.0,
+    },
+}
 
 
 def optional_lora(job_input):
-    """Download and enable the selected LoRA only when explicitly requested."""
-    selection = job_input.get("lora", "none")
-    if selection in (None, "none", False):
-        return None
-    if selection != "bounce_fl2va":
-        raise ValueError("input.lora must be 'none' or 'bounce_fl2va'.")
-    strength = float(job_input.get("lora_strength", 0.8))
-    if not 0 <= strength <= 2:
-        raise ValueError("input.lora_strength must be between 0 and 2.")
+    """Return selected LoRAs in order; preserve legacy input.lora support."""
+    selections = job_input.get("loras")
+    if selections is None:
+        legacy = job_input.get("lora", "none")
+        selections = [] if legacy in (None, "none", False) else [
+            {"name": legacy, "strength": job_input.get("lora_strength")}
+        ]
+    if not isinstance(selections, list):
+        raise ValueError("input.loras must be a list.")
+    if len(selections) > len(LORA_SPECS):
+        raise ValueError("Too many LoRAs selected.")
 
-    folder = os.path.join(COMFYUI_DIR, "models", "loras")
-    os.makedirs(folder, exist_ok=True)
-    target = os.path.join(folder, LORA_FILENAME)
-    if not os.path.isfile(target) or os.path.getsize(target) == 0:
-        url = f"https://civitai.com/api/download/models/{LORA_VERSION_ID}"
-        headers = {}
-        token = os.environ.get("CIVITAI_API_TOKEN", "").strip()
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-        temp = target + ".part"
-        try:
-            with requests.get(url, headers=headers, stream=True, timeout=(20, 120)) as response:
-                response.raise_for_status()
-                with open(temp, "wb") as output:
-                    for chunk in response.iter_content(chunk_size=1024 * 1024):
-                        if chunk:
-                            output.write(chunk)
-            with open(temp, "rb") as downloaded:
-                header = downloaded.read(8)
-                if len(header) != 8:
-                    raise RuntimeError("LoRA download was empty or incomplete.")
-                header_size = int.from_bytes(header, "little")
-                if not 0 < header_size < 100_000_000:
-                    raise RuntimeError("LoRA download was not a valid safetensors file.")
-            os.replace(temp, target)
-            print(f"[LoRA] downloaded: {LORA_FILENAME}", flush=True)
-        finally:
-            if os.path.exists(temp):
-                os.remove(temp)
-    return {"filename": LORA_FILENAME, "strength": strength}
+    selected = []
+    seen = set()
+    for entry in selections:
+        if isinstance(entry, str):
+            name, raw_strength = entry, None
+        elif isinstance(entry, dict):
+            name, raw_strength = entry.get("name"), entry.get("strength")
+        else:
+            raise ValueError("Each LoRA must be a name or {name, strength}.")
+        if name not in LORA_SPECS:
+            raise ValueError(f"Unknown LoRA: {name!r}.")
+        if name in seen:
+            raise ValueError(f"Duplicate LoRA: {name}.")
+        seen.add(name)
+        spec = LORA_SPECS[name]
+        strength = float(spec["default_strength"] if raw_strength is None else raw_strength)
+        if not 0 <= strength <= 2:
+            raise ValueError(f"LoRA strength for {name} must be between 0 and 2.")
+
+        filename = spec["filename"]
+        target = os.path.join(COMFYUI_DIR, "models", "loras", filename)
+        if not os.path.isfile(target) or os.path.getsize(target) == 0:
+            # Keep compatibility with previously built images. New images bundle both.
+            url = f"https://civitai.com/api/download/models/{spec['version_id']}"
+            token = os.environ.get("CIVITAI_API_TOKEN", "").strip()
+            headers = {"Authorization": f"Bearer {token}"} if token else {}
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            temp = target + ".part"
+            try:
+                with requests.get(url, headers=headers, stream=True, timeout=(20, 120)) as response:
+                    response.raise_for_status()
+                    with open(temp, "wb") as output:
+                        for chunk in response.iter_content(chunk_size=1024 * 1024):
+                            if chunk:
+                                output.write(chunk)
+                with open(temp, "rb") as downloaded:
+                    header = downloaded.read(8)
+                    if len(header) != 8 or not 0 < int.from_bytes(header, "little") < 100_000_000:
+                        raise RuntimeError(f"Invalid safetensors download: {filename}")
+                os.replace(temp, target)
+                print(f"[LoRA] downloaded: {filename}", flush=True)
+            finally:
+                if os.path.exists(temp):
+                    os.remove(temp)
+        selected.append({"filename": filename, "strength": strength})
+    return selected
 
 
-def apply_optional_lora(workflow, lora):
-    if lora is None:
-        return workflow
-    workflow["18"] = {
-        "class_type": "LoraLoaderModelOnly",
-        "inputs": {
-            "model": ["2", 0],
-            "lora_name": lora["filename"],
-            "strength_model": lora["strength"],
-        },
-    }
-    workflow["8"]["inputs"]["model"] = ["18", 0]
+def apply_optional_lora(workflow, loras):
+    """Chain model-only LoRAs before MiniMaxH3SigmaShift."""
+    model_ref = ["2", 0]
+    for index, lora in enumerate(loras or []):
+        node_id = str(30 + index)
+        workflow[node_id] = {
+            "class_type": "LoraLoaderModelOnly",
+            "inputs": {
+                "model": model_ref,
+                "lora_name": lora["filename"],
+                "strength_model": lora["strength"],
+            },
+        }
+        model_ref = [node_id, 0]
+    workflow["8"]["inputs"]["model"] = model_ref
     return workflow
 
 
@@ -754,10 +785,7 @@ def build_h3_extend_workflow(video_filename, prompt, length, skip_first_frames,
         },
     }
 
-    if optional_loras:
-        workflow["19"] = {"class_type": "LoraLoaderModelOnly", "inputs": {"model": ["8", 0], "lora_name": optional_loras["filename"], "strength_model": optional_loras["strength"]}}
-        workflow["11"]["inputs"]["model"] = ["19", 0]
-        workflow["12"]["inputs"]["model"] = ["19", 0]
+    apply_optional_lora(workflow, optional_loras)
 
     return workflow
 
