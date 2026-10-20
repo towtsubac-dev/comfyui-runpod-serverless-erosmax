@@ -899,11 +899,26 @@ def h3_extend_generate(job_input):
                 os.remove(input_path)
 
 
+def test_registered_lora(job_input):
+    """Download and verify one library LoRA without generating video."""
+    descriptor = job_input.get("registered")
+    filename = download_registered_lora(descriptor)
+    return {
+        "status": "ok",
+        "message": "Registered LoRA downloaded and SHA-256 verified",
+        "filename": filename,
+        "size": descriptor["size"],
+        "sha256": descriptor["sha256"],
+    }
+
+
 def handler(job):
     job_input = job.get("input", {})
     action = job_input.get("action", "h3_generate")
 
     try:
+        if action == "lora_download_test":
+            return test_registered_lora(job_input)
         if action == "health":
             ensure_comfyui()
             return {"status": "ok", "message": "ComfyUI is running", "system_stats": requests.get(f"{COMFYUI_URL}/system_stats", timeout=30).json()}
