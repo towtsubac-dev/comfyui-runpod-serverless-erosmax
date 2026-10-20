@@ -93,5 +93,6 @@ PY
 
 COPY download_models.py /workspace/download_models.py
 COPY handler.py /workspace/handler.py
+COPY registered_lora.py /workspace/registered_lora.py
 
 CMD ["python", "/workspace/handler.py"]

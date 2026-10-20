@@ -8,6 +8,7 @@ on:
       - eros-video-extend-test
       - erosmax-variable-extension-test
       - feature/mystic-xxx-combined-loras
+      - feature/eros-lora-library
   workflow_dispatch:
 
 env:
@@ -42,5 +43,5 @@ jobs:
             civitai_api_token=CIVITAI_API_TOKEN
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/comfyui-runpod-serverless-erosmax:${{ github.ref_name == 'main' && 'latest' || github.ref_name == 'eros-video-extend-test' && 'extend-test' || github.ref_name == 'erosmax-variable-extension-test' && 'duration-test' || github.ref_name == 'feature/mystic-xxx-combined-loras' && 'mystic-lora-test' || 'cachetest' }}
+            ghcr.io/${{ github.repository_owner }}/comfyui-runpod-serverless-erosmax:${{ github.ref_name == 'main' && 'latest' || github.ref_name == 'eros-video-extend-test' && 'extend-test' || github.ref_name == 'erosmax-variable-extension-test' && 'duration-test' || github.ref_name == 'feature/mystic-xxx-combined-loras' && 'mystic-lora-test' || github.ref_name == 'feature/eros-lora-library' && 'lora-library-test' || 'cachetest' }}
             ${{ github.ref_name == 'main' && format('ghcr.io/{0}/comfyui-runpod-serverless-erosmax:v1', github.repository_owner) || '' }}
