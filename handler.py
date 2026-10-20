@@ -169,20 +169,6 @@ def download_output(item):
 
 
 
-LORA_SPECS = {
-    "bounce_fl2va": {
-        "filename": "bounceV07_fl2va-000230_Intense.safetensors",
-        "version_id": 3258590,
-        "default_strength": 0.8,
-    },
-    "mystic_xxx_v4": {
-        "filename": "MysticXXX_MMH3-V4.safetensors",
-        "version_id": 3266628,
-        "default_strength": 1.0,
-    },
-}
-
-
 def optional_lora(job_input):
     """Return selected LoRAs in order; preserve legacy input.lora support."""
     selections = job_input.get("loras")
@@ -218,42 +204,7 @@ def optional_lora(job_input):
             filename = download_registered_lora(registered)
             selected.append({"filename": filename, "strength": strength})
             continue
-        if name not in LORA_SPECS:
-            raise ValueError(f"Unknown LoRA: {name!r}.")
-        if name in seen:
-            raise ValueError(f"Duplicate LoRA: {name}.")
-        seen.add(name)
-        spec = LORA_SPECS[name]
-        strength = float(spec["default_strength"] if raw_strength is None else raw_strength)
-        if not 0 <= strength <= 2:
-            raise ValueError(f"LoRA strength for {name} must be between 0 and 2.")
-
-        filename = spec["filename"]
-        target = os.path.join(COMFYUI_DIR, "models", "loras", filename)
-        if not os.path.isfile(target) or os.path.getsize(target) == 0:
-            # Keep compatibility with previously built images. New images bundle both.
-            url = f"https://civitai.com/api/download/models/{spec['version_id']}"
-            token = os.environ.get("CIVITAI_API_TOKEN", "").strip()
-            headers = {"Authorization": f"Bearer {token}"} if token else {}
-            os.makedirs(os.path.dirname(target), exist_ok=True)
-            temp = target + ".part"
-            try:
-                with requests.get(url, headers=headers, stream=True, timeout=(20, 120)) as response:
-                    response.raise_for_status()
-                    with open(temp, "wb") as output:
-                        for chunk in response.iter_content(chunk_size=1024 * 1024):
-                            if chunk:
-                                output.write(chunk)
-                with open(temp, "rb") as downloaded:
-                    header = downloaded.read(8)
-                    if len(header) != 8 or not 0 < int.from_bytes(header, "little") < 100_000_000:
-                        raise RuntimeError(f"Invalid safetensors download: {filename}")
-                os.replace(temp, target)
-                print(f"[LoRA] downloaded: {filename}", flush=True)
-            finally:
-                if os.path.exists(temp):
-                    os.remove(temp)
-        selected.append({"filename": filename, "strength": strength})
+        raise ValueError("Only registered library LoRAs are supported.")
     return selected
 
 
