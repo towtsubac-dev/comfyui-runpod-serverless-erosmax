@@ -8,6 +8,8 @@ import uuid
 import requests
 import runpod
 
+from registered_lora import download_registered_lora
+
 COMFYUI_DIR = "/workspace/ComfyUI"
 COMFYUI_URL = "http://127.0.0.1:8188"
 
@@ -191,7 +193,7 @@ def optional_lora(job_input):
         ]
     if not isinstance(selections, list):
         raise ValueError("input.loras must be a list.")
-    if len(selections) > len(LORA_SPECS):
+    if len(selections) > 2:
         raise ValueError("Too many LoRAs selected.")
 
     selected = []
@@ -203,6 +205,19 @@ def optional_lora(job_input):
             name, raw_strength = entry.get("name"), entry.get("strength")
         else:
             raise ValueError("Each LoRA must be a name or {name, strength}.")
+        registered = entry.get("registered") if isinstance(entry, dict) else None
+        if registered is not None:
+            if not isinstance(registered, dict) or name != "library:" + str(registered.get("id")):
+                raise ValueError("Registered LoRA ID mismatch.")
+            if name in seen:
+                raise ValueError(f"Duplicate LoRA: {name}.")
+            seen.add(name)
+            strength = float(1.0 if raw_strength is None else raw_strength)
+            if not 0 <= strength <= 2:
+                raise ValueError("Registered LoRA strength must be between 0 and 2.")
+            filename = download_registered_lora(registered)
+            selected.append({"filename": filename, "strength": strength})
+            continue
         if name not in LORA_SPECS:
             raise ValueError(f"Unknown LoRA: {name!r}.")
         if name in seen:
