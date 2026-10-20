@@ -4,6 +4,7 @@ This module does not change the existing bundled Civitai LoRAs.
 Only call it with a trusted descriptor created by the Vercel backend.
 """
 import hashlib
+import json
 import os
 import re
 import tempfile
@@ -65,6 +66,29 @@ def download_registered_lora(descriptor, directory="/workspace/ComfyUI/models/lo
             header = f.read(8)
             if len(header) != 8 or not 2 <= int.from_bytes(header, "little") <= 16 * 1024 * 1024:
                 raise ValueError("Invalid safetensors header")
+            header_length = int.from_bytes(header, "little")
+            metadata = json.loads(f.read(header_length).decode("utf-8"))
+            if not isinstance(metadata, dict):
+                raise ValueError("Invalid safetensors metadata")
+            tensors = [value for key, value in metadata.items() if key != "__metadata__"]
+            if not tensors:
+                raise ValueError("Safetensors contains no tensors")
+            intervals = []
+            for tensor in tensors:
+                if not isinstance(tensor, dict) or not isinstance(tensor.get("data_offsets"), list):
+                    raise ValueError("Invalid safetensors tensor descriptor")
+                offsets = tensor["data_offsets"]
+                if len(offsets) != 2 or any(type(x) is not int for x in offsets):
+                    raise ValueError("Invalid safetensors offsets")
+                intervals.append(offsets)
+            intervals.sort()
+            end = 0
+            for start, stop in intervals:
+                if start != end or stop < start:
+                    raise ValueError("Invalid safetensors tensor layout")
+                end = stop
+            if end != size - 8 - header_length:
+                raise ValueError("Safetensors tensor data size mismatch")
         os.replace(temporary, target)
         return filename
     finally:
