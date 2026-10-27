@@ -30,10 +30,11 @@ RUN pip install --break-system-packages -r requirements.txt
 RUN pip install --break-system-packages runpod requests huggingface_hub hf_transfer
 RUN pip install --break-system-packages -r /workspace/ComfyUI/custom_nodes/ComfyUI-VideoHelperSuite/requirements.txt
 
-# SageAttention 2.2.0 wheel matched to torch 2.12.0 / CUDA 13.0 / Python 3.12 / RTX 4090 (SM89).
-RUN pip install --break-system-packages --no-deps \
+# Keep architecture-specific wheels isolated; choose at container startup.
+RUN pip install --break-system-packages --no-deps --target /opt/sage/sm89 \
     https://github.com/tcpassos/sage-wheels-linux/releases/download/sage-2.2.0-torch-2.12.0-cu130-py312/sageattention-2.2.0-89-cp312-cp312-linux_x86_64.whl
-RUN python -c "import sageattention; print('SageAttention import OK')"
+RUN pip install --break-system-packages --no-deps --target /opt/sage/sm120 \
+    https://github.com/tcpassos/sage-wheels-linux/releases/download/sage-2.2.0-torch-2.12.0-cu130-py312/sageattention-2.2.0-120-cp312-cp312-linux_x86_64.whl
 
 WORKDIR /workspace
 
@@ -41,4 +42,5 @@ COPY download_models.py /workspace/download_models.py
 COPY handler.py /workspace/handler.py
 COPY registered_lora.py /workspace/registered_lora.py
 
-CMD ["python", "/workspace/handler.py"]
+COPY sage_launcher.py /workspace/sage_launcher.py
+CMD ["python", "/workspace/sage_launcher.py"]
