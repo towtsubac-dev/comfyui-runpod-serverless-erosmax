@@ -3,7 +3,6 @@ FROM pytorch/pytorch:2.12.0-cuda13.0-cudnn9-runtime
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV HF_HOME=/workspace/huggingface
-ENV HF_HUB_ENABLE_HF_TRANSFER=1
 
 RUN apt-get update && apt-get install -y \
     git \
