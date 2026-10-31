@@ -30,9 +30,10 @@ RUN pip install --break-system-packages -r requirements.txt
 RUN pip install --break-system-packages runpod requests huggingface_hub hf_transfer
 RUN pip install --break-system-packages -r /workspace/ComfyUI/custom_nodes/ComfyUI-VideoHelperSuite/requirements.txt
 
-# SageAttention 2.2.0 wheel matched to torch 2.12.0 / CUDA 13.0 / Python 3.12 / RTX 4090 (SM89).
+# Test-only: SageAttention 2.2.0 matched to torch 2.12.0 / CUDA 13.0 / Python 3.12 / Blackwell (SM120).
+# The production RTX 4090 (SM89) image remains untouched.
 RUN pip install --break-system-packages --no-deps \
-    https://github.com/tcpassos/sage-wheels-linux/releases/download/sage-2.2.0-torch-2.12.0-cu130-py312/sageattention-2.2.0-89-cp312-cp312-linux_x86_64.whl
+    https://github.com/tcpassos/sage-wheels-linux/releases/download/sage-2.2.0-torch-2.12.0-cu130-py312/sageattention-2.2.0-120-cp312-cp312-linux_x86_64.whl
 RUN python -c "import sageattention; print('SageAttention import OK')"
 
 WORKDIR /workspace
