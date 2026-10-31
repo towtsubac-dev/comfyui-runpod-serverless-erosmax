@@ -37,6 +37,25 @@ RUN python -c "import sageattention; print('SageAttention import OK')"
 
 WORKDIR /workspace
 
+# Bake only shared MiniMax H3 support weights into the image.
+# The Eros Max diffusion model remains on RunPod's host-side model cache.
+# Files are placed where download_models.py already checks for them.
+RUN python - <<'PY'
+from huggingface_hub import hf_hub_download
+
+for filename in (
+    "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+    "vae/minimax_h3_video_vae_int8_convrot.safetensors",
+    "vae/minimax_h3_audio_vae_fp32.safetensors",
+):
+    hf_hub_download(
+        repo_id="Comfy-Org/MiniMax-H3",
+        filename=filename,
+        local_dir="/workspace/ComfyUI/models",
+    )
+    print(f"[BUILD] bundled {filename}", flush=True)
+PY
+
 COPY download_models.py /workspace/download_models.py
 COPY handler.py /workspace/handler.py
 COPY registered_lora.py /workspace/registered_lora.py
