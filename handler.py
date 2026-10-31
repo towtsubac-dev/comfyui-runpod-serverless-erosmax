@@ -50,15 +50,17 @@ def start_comfyui():
         return
 
     print("[ErosMax] Starting ComfyUI...", flush=True)
-    _comfy_process = subprocess.Popen(
-        [
-            "python", "main.py",
-            "--listen", "127.0.0.1",
-            "--port", "8188",
-            "--use-sage-attention",
-        ],
-        cwd=COMFYUI_DIR,
-    )
+    comfy_args = [
+        "python", "main.py",
+        "--listen", "127.0.0.1",
+        "--port", "8188",
+    ]
+    if os.environ.get("EROSMAX_DISABLE_SAGE") == "1":
+        print("[ErosMax] ComfyUI attention: PyTorch fallback", flush=True)
+    else:
+        comfy_args.append("--use-sage-attention")
+        print("[ErosMax] ComfyUI attention: SageAttention", flush=True)
+    _comfy_process = subprocess.Popen(comfy_args, cwd=COMFYUI_DIR)
 
 
 def wait_for_comfyui(timeout=180):
