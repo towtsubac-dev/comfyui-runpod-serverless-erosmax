@@ -8,7 +8,7 @@ ENV PATH=/usr/local/cuda-13.0/bin:$PATH
 ENV TORCH_CUDA_ARCH_LIST="8.9;12.0"
 ENV MAX_JOBS=2
 RUN apt-get update && apt-get install -y --no-install-recommends git gcc g++ ninja-build libgomp1 && rm -rf /var/lib/apt/lists/*
-RUN pip install --no-cache-dir packaging ninja setuptools wheel
+RUN pip install --break-system-packages --no-cache-dir packaging ninja setuptools wheel
 RUN git clone --depth 1 --branch v2.2.0 https://github.com/thu-ml/SageAttention.git /tmp/SageAttention
 RUN cd /tmp/SageAttention && pip wheel --no-build-isolation --no-deps -w /tmp/sage-wheels .
 
