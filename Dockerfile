@@ -1,3 +1,17 @@
+# Build SageAttention against the exact PyTorch/CUDA runtime used by ErosMax.
+# The build stage contains nvcc; the final image stays on the smaller runtime base.
+FROM nvidia/cuda:13.0.0-devel-ubuntu24.04 AS cuda_toolkit
+FROM pytorch/pytorch:2.12.0-cuda13.0-cudnn9-runtime AS sage_builder
+COPY --from=cuda_toolkit /usr/local/cuda-13.0 /usr/local/cuda-13.0
+ENV CUDA_HOME=/usr/local/cuda-13.0
+ENV PATH=/usr/local/cuda-13.0/bin:$PATH
+ENV TORCH_CUDA_ARCH_LIST="8.9;12.0"
+ENV MAX_JOBS=2
+RUN apt-get update && apt-get install -y --no-install-recommends git gcc g++ ninja-build libgomp1 && rm -rf /var/lib/apt/lists/*
+RUN pip install --break-system-packages --no-cache-dir packaging ninja setuptools wheel
+RUN git clone --depth 1 --branch v2.2.0 https://github.com/thu-ml/SageAttention.git /tmp/SageAttention
+RUN cd /tmp/SageAttention && pip wheel --no-build-isolation --no-deps -w /tmp/sage-wheels .
+
 FROM pytorch/pytorch:2.12.0-cuda13.0-cudnn9-runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -30,10 +44,10 @@ RUN pip install --break-system-packages -r requirements.txt
 RUN pip install --break-system-packages runpod requests huggingface_hub hf_transfer
 RUN pip install --break-system-packages -r /workspace/ComfyUI/custom_nodes/ComfyUI-VideoHelperSuite/requirements.txt
 
-# SageAttention 2.2.0 wheel matched to torch 2.12.0 / CUDA 13.0 / Python 3.12 / RTX 4090 (SM89).
-RUN pip install --break-system-packages --no-deps \
-    https://github.com/tcpassos/sage-wheels-linux/releases/download/sage-2.2.0-torch-2.12.0-cu130-py312/sageattention-2.2.0-89-cp312-cp312-linux_x86_64.whl
-RUN python -c "import sageattention; print('SageAttention import OK')"
+# Locally built SageAttention supports both RTX 4090 (SM89) and Blackwell (SM120).
+COPY --from=sage_builder /tmp/sage-wheels/ /tmp/sage-wheels/
+RUN pip install --break-system-packages --no-deps /tmp/sage-wheels/sageattention*.whl && rm -rf /tmp/sage-wheels
+RUN python -c "import sageattention, torch; print('SageAttention import OK; torch=', torch.__version__)"
 
 WORKDIR /workspace
 

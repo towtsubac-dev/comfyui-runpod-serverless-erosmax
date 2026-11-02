@@ -179,8 +179,8 @@ def optional_lora(job_input):
         ]
     if not isinstance(selections, list):
         raise ValueError("input.loras must be a list.")
-    if len(selections) > 2:
-        raise ValueError("Too many LoRAs selected.")
+    if len(selections) > 5:
+        raise ValueError("Too many LoRAs selected (maximum 5).")
 
     selected = []
     seen = set()
