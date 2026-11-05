@@ -52,6 +52,12 @@ RUN python -c "import sageattention, torch; print('SageAttention import OK; torc
 WORKDIR /workspace
 
 COPY download_models.py /workspace/download_models.py
+
+# Download all required model weights during image build, not after a
+# Serverless GPU worker starts. Existing handler checks these files and
+# skips downloads when they are already present.
+RUN python /workspace/download_models.py
+
 COPY handler.py /workspace/handler.py
 COPY registered_lora.py /workspace/registered_lora.py
 
