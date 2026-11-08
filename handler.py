@@ -632,6 +632,260 @@ def _concat_extended_video(original_path, segment_path, output_path):
 
 
 
+# ErosMax Preview-only extension flash repair, ported from MiniMax H3 v11.
+# Apply after one successful inference, before concatenating with the input video.
+# No impact on T2V/I2V, LoRA selection, or extension sampling.
+def _log_extension_start_luma(path, label, count=8):
+    # Diagnostic only: inspect every decoded frame in the first ~0.33 seconds.
+    # No changes to output video, audio, or existing RGB matching.
+    import numpy as np
+    cmd = [
+        "ffmpeg", "-v", "error", "-i", path,
+        "-map", "0:v:0", "-frames:v", str(count),
+        "-vf", "scale=160:90,format=rgb24",
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
+    ]
+    raw = subprocess.run(cmd, check=True, capture_output=True, timeout=60).stdout
+    frame_size = 160 * 90 * 3
+    frames = len(raw) // frame_size
+    if frames == 0 or len(raw) % frame_size:
+        raise ValueError("Unable to decode extension-start frames")
+    pixels = np.frombuffer(raw, dtype=np.uint8).reshape(frames, 90, 160, 3).astype(np.float32) / 255.0
+    weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    luma = pixels @ weights
+    means = np.round(luma.mean(axis=(1, 2)), 4).tolist()
+    print(f"[EROS EXTEND FRAME] {label} first_{frames}_luma={means}", flush=True)
+
+
+def _probe_extension_start_rgb(path, count=12):
+    """Decode the opening frames once so calibration never samples a flash by timestamp."""
+    import numpy as np
+    cmd = [
+        "ffmpeg", "-v", "error", "-i", path, "-map", "0:v:0",
+        "-frames:v", str(count), "-vf", "scale=160:90,format=rgb24",
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
+    ]
+    raw = subprocess.run(cmd, check=True, capture_output=True, timeout=60).stdout
+    size = 160 * 90 * 3
+    if len(raw) < 6 * size or len(raw) % size:
+        raise ValueError("Insufficient extension frames for seam analysis")
+    return np.frombuffer(raw, dtype=np.uint8).reshape(-1, 90, 160, 3).astype(np.float32) / 255.0
+
+
+def _read_extension_source_last_rgb(path):
+    """Read the final decoded source frame, not a frame at an approximate timestamp."""
+    import numpy as np
+    raw = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", path, "-map", "0:v:0",
+         "-vf", "scale=160:90,format=rgb24", "-f", "rawvideo",
+         "-pix_fmt", "rgb24", "pipe:1"],
+        check=True, capture_output=True, timeout=180,
+    ).stdout
+    size = 160 * 90 * 3
+    if len(raw) < size or len(raw) % size:
+        raise ValueError("Cannot inspect final source frame")
+    return np.frombuffer(raw[-size:], dtype=np.uint8).reshape(90, 160, 3).astype(np.float32) / 255.0
+
+
+def _v10_flash_plan(frames, source, label):
+    """Locate an exposure-only opening glitch using the actual source end frame."""
+    import numpy as np
+    weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    means = (frames @ weights).mean(axis=(1, 2))
+    reference_y = source @ weights
+    source_mean = float(reference_y.mean())
+    reference_std = float(reference_y.std())
+    corrs = []
+    for frame in frames:
+        current_y = frame @ weights
+        if min(reference_std, float(current_y.std())) < 0.01:
+            corrs.append(0.0)
+        else:
+            corrs.append(float(np.corrcoef(reference_y.ravel(), current_y.ravel())[0, 1]))
+    corrs = np.asarray(corrs, dtype=np.float32)
+    peak = int(np.argmax(means[:min(6, len(means))]))
+    first_excess = float(means[0] - source_mean)
+    peak_excess = float(means[peak] - source_mean)
+    print(
+        f"[EROS EXTEND FLASH] {label}: v10 scan source={source_mean:.4f} "
+        f"first_12={means[:12].round(4).tolist()} "
+        f"corr={corrs[:12].round(3).tolist()}", flush=True,
+    )
+    if float(corrs[0]) < 0.92:
+        return None
+    residual = False
+    if first_excess >= 0.032:
+        start = 0
+    elif (abs(first_excess) < 0.020 and peak in (1, 2, 3, 4)
+          and peak_excess > 0.032
+          and bool(np.all(corrs[:peak + 1] > 0.93))):
+        start, residual = 1, True
+    else:
+        return None
+
+    anchor = None
+    # A bright three-frame plateau may still be part of a fading flash.
+    # Only accept a recovered window at most 0.014 brighter than the source.
+    # A slightly darker window is allowed for natural movement / darkening.
+    for i in range(max(start + 1, peak + 1 if residual else 1),
+                   min(11, len(means) - 2)):
+        window = means[i:i + 3]
+        window_delta = float(window.mean() - source_mean)
+        if (float(np.max(np.abs(np.diff(window)))) >= 0.014
+                or window_delta > 0.014 or window_delta < -0.035
+                or float(corrs[i]) < 0.72):
+            continue
+        if max(float(means[k] - window.mean())
+               for k in range(start, min(i, 7))) < 0.030:
+            continue
+        anchor = i
+        break
+    # v7-style isolated 1-frame flash followed immediately by a normal frame.
+    if anchor is None and start == 0 and len(means) > 2:
+        if (abs(float(means[1] - source_mean)) < 0.025
+                and abs(float(means[2] - source_mean)) < 0.025
+                and abs(float(means[1] - means[2])) < 0.018
+                and float(corrs[1]) > 0.92
+                and float(means[0] - means[1]) > 0.030):
+            anchor = 1
+    if anchor is None:
+        return None
+
+    offsets = []
+    # TV-range YUV420p uses 219 luma codes per unit; do not touch U/V chroma.
+    # Interpolate *exposure* only; never duplicate frames or change motion.
+    for frame_i in range(start, anchor):
+        fraction = (frame_i - start) / (anchor - start)
+        target = source_mean * (1.0 - fraction) + float(means[anchor]) * fraction
+        y_offset = int(round((target - float(means[frame_i])) * 219))
+        if abs(y_offset) > 48:
+            return None
+        offsets.append(y_offset)
+    return {
+        "start": start, "anchor": anchor, "offsets": offsets,
+        "source_mean": source_mean, "recovery_mean": float(means[anchor]),
+    }
+
+
+def _v11_fade_flash_plan(frames, source):
+    """Detect a strongly source-correlated, 4-10 frame fading exposure flash.
+
+    This is deliberately a narrow fallback to v10: normal motion or a new
+    lighting condition must not be flattened simply to match mean luminance.
+    """
+    import numpy as np
+    if len(frames) < 11:
+        return None
+    weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    means = (frames @ weights).mean(axis=(1, 2))
+    reference = source @ weights
+    source_mean = float(reference.mean())
+    source_std = float(reference.std())
+    if source_std < 0.01:
+        return None
+
+    corrs = []
+    for frame in frames[:3]:
+        current = frame @ weights
+        if float(current.std()) < 0.01:
+            return None
+        corrs.append(float(np.corrcoef(reference.ravel(), current.ravel())[0, 1]))
+    if not (
+        float(means[0] - source_mean) >= 0.07
+        and corrs[0] >= 0.955
+        and corrs[1] >= 0.90
+        and corrs[2] >= 0.74
+    ):
+        return None
+
+    early_drops = np.diff(means[:5])
+    if not (
+        bool(np.all(early_drops < 0.012))
+        and float(means[0] - means[2]) > 0.035
+        and float(means[0] - means[4]) > 0.065
+        and int(np.count_nonzero(early_drops < -0.006)) >= 3
+        and float(np.max(early_drops)) < 0.009
+    ):
+        return None
+
+    anchor = None
+    for i in range(4, min(11, len(means) - 2)):
+        window = means[i:i + 3]
+        if (
+            float(np.ptp(window)) > 0.018
+            or abs(float(np.median(window) - source_mean)) > 0.035
+            or float(means[i] - source_mean) > 0.021
+            or float(means[i] - means[0]) > -0.065
+            or bool(np.any(means[1:i] < means[i] - 0.028))
+            or bool(np.any(np.diff(means[:i + 1]) > 0.014))
+        ):
+            continue
+        anchor = i
+        break
+    if anchor is None:
+        return None
+
+    offsets = []
+    for i in range(anchor):
+        target = source_mean + (float(means[anchor]) - source_mean) * i / anchor
+        offset = int(round((target - float(means[i])) * 219))
+        if abs(offset) > 40:
+            return None
+        offsets.append(offset)
+    print(
+        f"[EROS EXTEND FLASH] v11 gradual fade confirmed: "
+        f"source={source_mean:.4f} first_12={means[:12].round(4).tolist()} "
+        f"first_corr={[round(c, 3) for c in corrs]} "
+        f"anchor={anchor} offsets={offsets}",
+        flush=True,
+    )
+    return {
+        "start": 0, "anchor": anchor, "offsets": offsets,
+        "source_mean": source_mean, "recovery_mean": float(means[anchor]),
+    }
+
+
+def _repair_extension_start_flash(segment_path, temp_dir, label, original_path=None):
+    """Adjust only the Y plane before exposure recovery, preserving v5 motion."""
+    if original_path is None:
+        return segment_path
+    frames = _probe_extension_start_rgb(segment_path, count=18)
+    source = _read_extension_source_last_rgb(original_path)
+    plan = _v10_flash_plan(frames, source, label)
+    version = "v10"
+    if plan is None:
+        plan = _v11_fade_flash_plan(frames, source)
+        version = "v11"
+    if plan is None:
+        print(
+            f"[EROS EXTEND FLASH] {label}: v10/v11 no confirmed exposure flash; unchanged",
+            flush=True,
+        )
+        return segment_path
+    start, anchor, offsets = plan["start"], plan["anchor"], plan["offsets"]
+    filters = [
+        f"lutyuv=y='clip(val+{offset},16,235)':enable='eq(n\\,{i})'"
+        for i, offset in enumerate(offsets, start=start)
+    ]
+    result = os.path.join(temp_dir, f"flash_repaired_{label}.mp4")
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", segment_path, "-map", "0:v:0", "-map", "0:a:0?",
+         "-vf", ",".join(filters), "-c:v", "libx264", "-preset", "medium",
+         "-crf", "16", "-pix_fmt", "yuv420p", "-c:a", "copy",
+         "-movflags", "+faststart", result],
+        check=True, capture_output=True, text=True, timeout=300,
+    )
+    print(
+        f"[EROS EXTEND FLASH] {label}: {version} Y-only repair applied "
+        f"frames={start}..{anchor-1} offsets={offsets} "
+        f"source={plan['source_mean']:.4f} recovery={plan['recovery_mean']:.4f}; "
+        f"remaining motion and chroma unchanged",
+        flush=True,
+    )
+    _log_extension_start_luma(result, f"{label} post_repair")
+    return result
+
+
 def build_h3_extend_workflow(video_filename, prompt, length, skip_first_frames,
                              frame_load_cap, steps=DEFAULT_STEPS, seed=None,
                              optional_loras=None):
@@ -686,7 +940,7 @@ def build_h3_extend_workflow(video_filename, prompt, length, skip_first_frames,
                 "audio_vae": ["5", 0],
                 "prompt": prompt,
                 "length": length,
-                "context_frames": 2,
+                "context_frames": 4,
                 "pin_last_frame": True,
             },
         },
@@ -840,11 +1094,59 @@ def h3_extend_generate(job_input):
             segment_path = os.path.join(temp_dir, "segment.mp4")
             with open(segment_path, "wb") as file:
                 file.write(base64.b64decode(segment_b64))
+            raw_segment_path = segment_path
+            flash_requested = job_input.get("extension_flash_repair", False) is True
+            if flash_requested:
+                try:
+                    _log_extension_start_luma(raw_segment_path, "raw")
+                    segment_path = _repair_extension_start_flash(
+                        raw_segment_path, temp_dir, "corrected", input_path
+                    )
+                except Exception as exc:
+                    # A detection/FFmpeg failure must never prevent a usable
+                    # extension from being returned; keep the original segment.
+                    print(f"[EROS EXTEND FLASH] repair failed; using original segment: {exc}", flush=True)
+                    segment_path = raw_segment_path
+            else:
+                print("[EROS EXTEND FLASH] off (Preview opt-in)", flush=True)
             combined = os.path.join(temp_dir, "extended.mp4")
             _concat_extended_video(input_path, segment_path, combined)
             with open(combined, "rb") as file:
                 result_b64 = base64.b64encode(file.read()).decode("ascii")
-            return {"status": "ok", "mode": "extend", "prompt_id": prompt_id, "outputs": [{"type": "videos", "filename": f"ErosMax_Extended_{job_id}.mp4", "data": result_b64}]}
+            returned_outputs = [{
+                "type": "videos",
+                "filename": f"ErosMax_Extended_{job_id}.mp4",
+                "data": result_b64,
+            }]
+            # Optional A/B comparison of the same inferred segment: no extra
+            # GPU inference. Keep the primary video if the second file is too
+            # large for RunPod's inline job result.
+            MAX_RUNPOD_INLINE_RESULT_BYTES = 19_500_000
+            if (job_input.get("extension_compare_flash", False) is True
+                    and flash_requested and segment_path != raw_segment_path):
+                try:
+                    raw_combined = os.path.join(temp_dir, "extended_no_flash.mp4")
+                    _concat_extended_video(input_path, raw_segment_path, raw_combined)
+                    with open(raw_combined, "rb") as file:
+                        raw_b64 = base64.b64encode(file.read()).decode("ascii")
+                    if len(result_b64) + len(raw_b64) + 4096 <= MAX_RUNPOD_INLINE_RESULT_BYTES:
+                        returned_outputs.append({
+                            "type": "videos",
+                            "filename": f"ErosMax_Extended_NO_FLASH_{job_id}.mp4",
+                            "data": raw_b64,
+                        })
+                    else:
+                        print("[EROS EXTEND FLASH] A/B skipped: inline result safety limit 19.5MB", flush=True)
+                except Exception as exc:
+                    print(f"[EROS EXTEND FLASH] A/B unavailable: {exc}", flush=True)
+            if len(result_b64) + 4096 > MAX_RUNPOD_INLINE_RESULT_BYTES:
+                print("[EROS EXTEND RETURN] primary video exceeds inline 19.5MB safety margin", flush=True)
+            return {
+                "status": "ok", "mode": "extend", "prompt_id": prompt_id,
+                "flash_repair_requested": flash_requested,
+                "flash_repair_applied": segment_path != raw_segment_path,
+                "outputs": returned_outputs,
+            }
         finally:
             if os.path.isfile(input_path):
                 os.remove(input_path)
@@ -857,7 +1159,7 @@ def handler(job):
     try:
         if action == "health":
             ensure_comfyui()
-            return {"status": "ok", "message": "ComfyUI is running", "system_stats": requests.get(f"{COMFYUI_URL}/system_stats", timeout=30).json()}
+            return {"status": "ok", "message": "ComfyUI is running", "eros_extend_revision": "v11-flash-preview", "system_stats": requests.get(f"{COMFYUI_URL}/system_stats", timeout=30).json()}
         if action == "h3_check":
             return h3_check()
         if action == "h3_extend_generate":
@@ -878,5 +1180,6 @@ if __name__ == "__main__":
     ensure_models()
     start_comfyui()
     wait_for_comfyui()
+    print("[ErosMax] revision=v11-flash-preview; flash=v10+v11 Y-only; Preview opt-in", flush=True)
     print("[ErosMax] Starting RunPod Serverless handler...", flush=True)
     runpod.serverless.start({"handler": handler})
