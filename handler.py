@@ -1159,7 +1159,7 @@ def handler(job):
     try:
         if action == "health":
             ensure_comfyui()
-            return {"status": "ok", "message": "ComfyUI is running", "system_stats": requests.get(f"{COMFYUI_URL}/system_stats", timeout=30).json()}
+            return {"status": "ok", "message": "ComfyUI is running", "eros_extend_revision": "v11-flash-preview", "system_stats": requests.get(f"{COMFYUI_URL}/system_stats", timeout=30).json()}
         if action == "h3_check":
             return h3_check()
         if action == "h3_extend_generate":
@@ -1180,5 +1180,6 @@ if __name__ == "__main__":
     ensure_models()
     start_comfyui()
     wait_for_comfyui()
+    print("[ErosMax] revision=v11-flash-preview; flash=v10+v11 Y-only; Preview opt-in", flush=True)
     print("[ErosMax] Starting RunPod Serverless handler...", flush=True)
     runpod.serverless.start({"handler": handler})
