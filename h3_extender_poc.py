@@ -22,11 +22,42 @@ REQUIRED_NODES = (
 )
 
 
-def _default_clip(prompt: str, seconds: int, seed: int) -> dict:
+def continuation_frame_plan(seconds: int, context_length: int) -> dict:
+    """Match the *visible* continuation length across H3 Motion Context sizes.
+
+    Upstream Extender uses 17k+5 native frames and trims the first N context
+    frames from the generated segment. These are the only two tested context
+    lengths. Both can yield 119 new frames (4.9583 s at 24 fps).
+
+    Passing 5.0 seconds for context=5 preserves the already-verified output:
+    upstream rounds 120 to 124 native frames. Context=22 must request 141
+    native frames instead (141/24=5.875 seconds), otherwise it yields only
+    102 visible frames. This plan is a computation, not a GPU validation.
+    """
+    if int(seconds) != 5:
+        raise ValueError("PoC supports only a single 5-second continuation.")
+    context = int(context_length)
+    if context not in (5, 22):
+        raise ValueError("PoC context_length must be 5 or 22.")
+    fps = 24
+    wanted_visible_frames = 119
+    native_frames = wanted_visible_frames + context
+    if native_frames % 17 != 5:
+        raise RuntimeError("Invalid H3 17k+5 temporal grid.")
+    return {
+        "fps": fps,
+        "requested_seconds": int(seconds),
+        "context_frames": context,
+        "native_frames": native_frames,
+        "visible_frames": wanted_visible_frames,
+        "clip_duration_seconds": 5.0 if context == 5 else native_frames / fps,
+    }
+
+
+def _default_clip(prompt: str, seconds: int, seed: int, context_length: int = 5) -> dict:
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError("A non-empty continuation prompt is required.")
-    if seconds != 5:
-        raise ValueError("PoC supports only a single 5-second continuation.")
+    frame_plan = continuation_frame_plan(seconds, context_length)
     if not 0 <= int(seed) < 10_000_000_000:
         raise ValueError("Seed must be between 0 and 9,999,999,999.")
     return {
@@ -35,7 +66,7 @@ def _default_clip(prompt: str, seconds: int, seed: int) -> dict:
         "prompt": prompt.strip(),
         "seed": int(seed),
         "seed_mode": "fixed",
-        "duration": 5.0,
+        "duration": frame_plan["clip_duration_seconds"],
         "validated": False,
         "color_adjustment": {
             "saturation": 100.0, "contrast": 100.0, "brightness": 100.0,
@@ -74,14 +105,13 @@ def build_workflow(
         raise ValueError("video_filename must be a single basename in ComfyUI/input.")
     if not width or not height or width % 32 or height % 32:
         raise ValueError("PoC source width/height must be multiples of 32.")
-    if int(context_length) not in (5, 22):
-        raise ValueError("PoC context_length must be 5 or 22.")
+    continuation_frame_plan(seconds, context_length)
     if int(steps) != 8:
         raise ValueError("PoC is fixed at 8 sampling steps.")
 
     clips_json = json.dumps(
         {"version": 2, "generation_mode": "ref2va", "motion_context": True,
-         "clips": [_default_clip(prompt, seconds, seed)],
+         "clips": [_default_clip(prompt, seconds, seed, context_length)],
          "continue_video_resize": {"mode": "original"}},
         ensure_ascii=False,
         separators=(",", ":"),
