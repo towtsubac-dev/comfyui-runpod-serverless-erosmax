@@ -5,6 +5,7 @@ on:
     branches:
       - feature/erosmax-h3-extender-poc
       - fix/erosmax-h3-extender-context22-5s-preview
+      - feature/erosmax-extender-r2-direct-preview
       - feature/erosmax-extender-lora-preview
   pull_request:
     paths:
@@ -12,6 +13,8 @@ on:
       - h3_extender_poc.py
       - handler.py
       - tests/test_h3_extender_poc.py
+      - tests/test_h3_extender_r2_io.py
+      - extender_r2_io.py
       - .github/workflows/h3-extender-poc-check.yml
 
 jobs:
@@ -27,6 +30,6 @@ jobs:
         with:
           python-version: '3.12'
       - name: Syntax check
-        run: python -m py_compile handler.py h3_extender_poc.py tests/test_h3_extender_poc.py
+        run: python -m py_compile handler.py h3_extender_poc.py extender_r2_io.py tests/test_h3_extender_poc.py tests/test_h3_extender_r2_io.py
       - name: Validate RunPod API workflow and Docker isolation (no GPU)
-        run: python -m unittest discover -s tests -p 'test_h3_extender_poc.py' -v
+        run: python -m unittest discover -s tests -p 'test_h3_extender*.py' -v

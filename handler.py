@@ -1323,6 +1323,7 @@ def h3_extender_generate(job_input):
     import glob
     import tempfile
     from h3_extender_poc import build_workflow, continuation_frame_plan
+    from extender_r2_io import download_r2_source, upload_r2_output
 
     prompt = str(job_input.get("prompt") or "").strip()
     if not prompt:
@@ -1333,6 +1334,7 @@ def h3_extender_generate(job_input):
 
     video_url = job_input.get("video_url")
     video_b64 = job_input.get("video")
+    output_upload = job_input.get("output_upload")
     if not video_url and not video_b64:
         raise ValueError("Missing input.video or input.video_url.")
 
@@ -1345,22 +1347,17 @@ def h3_extender_generate(job_input):
     output_prefix = f"ErosH3Extender_PoC_{job_id}"
     input_path = os.path.join(COMFYUI_DIR, "input", filename)
     try:
+        os.makedirs(os.path.dirname(input_path), exist_ok=True)
         if video_url:
-            from urllib.parse import urlparse
-            parsed = urlparse(str(video_url))
-            if parsed.scheme != "https" or not parsed.hostname:
-                raise ValueError("input.video_url must be a valid HTTPS URL.")
-            response = requests.get(video_url, timeout=90)
-            response.raise_for_status()
-            video_bytes = response.content
+            # Studio passes a signed R2 GET. Stream with a hard size cap and
+            # reject arbitrary hosts/redirects to avoid worker-side SSRF.
+            download_r2_source(video_url, input_path)
         else:
             video_bytes = base64.b64decode(str(video_b64).split(",")[-1], validate=True)
-
-        if not video_bytes or len(video_bytes) > 100 * 1024 * 1024:
-            raise ValueError("Input video must be 1-100 MiB.")
-        os.makedirs(os.path.dirname(input_path), exist_ok=True)
-        with open(input_path, "wb") as handle:
-            handle.write(video_bytes)
+            if not 16 <= len(video_bytes) <= 100 * 1024 * 1024:
+                raise ValueError("Input video must be 16 bytes to 100 MiB.")
+            with open(input_path, "wb") as handle:
+                handle.write(video_bytes)
 
         meta = _probe_video(input_path)
         if not (0 < float(meta["duration"]) <= 120):
@@ -1418,14 +1415,7 @@ def h3_extender_generate(job_input):
                 f"ComfyUI output keys: {node_keys}"
             )
         final_path = max(candidates, key=os.path.getmtime)
-        with open(final_path, "rb") as handle:
-            data = handle.read()
-        if len(data) > 14_000_000:
-            raise RuntimeError(
-                "Extender PoC output exceeds safe RunPod inline limit (14 MB); "
-                "video remains on the test worker only."
-            )
-        return {
+        result = {
             "status": "ok",
             "mode": "h3_extender_poc",
             "prompt_id": prompt_id,
@@ -1433,12 +1423,29 @@ def h3_extender_generate(job_input):
             "context_length": context_length,
             "frame_plan": frame_plan,
             "lora_count": len(resolved_loras),
-            "outputs": [{
+        }
+        if output_upload is not None:
+            # Output is sent directly to one presigned R2 staging key.
+            # The RunPod result contains only a small signed receipt;
+            # no R2 secrets or signed URLs are returned.
+            result["r2_upload"] = upload_r2_output(final_path, output_upload)
+            result["outputs"] = []
+            print("[EROS EXTENDER R2] uploaded video bytes="
+                  + str(result["r2_upload"]["bytes"]), flush=True)
+        else:
+            # Legacy direct-RunPod tests remain compatible if the new
+            # Preview feature flag is OFF; keep the old 14MB safety cap.
+            if os.path.getsize(final_path) > 14_000_000:
+                raise RuntimeError("Extender inline result exceeds 14 MB; "
+                                   "enable the Studio R2 direct-output Preview")
+            with open(final_path, "rb") as handle:
+                data = handle.read()
+            result["outputs"] = [{
                 "type": "videos",
                 "filename": output_prefix + ".mp4",
                 "data": base64.b64encode(data).decode("ascii"),
-            }],
-        }
+            }]
+        return result
     finally:
         if os.path.isfile(input_path):
             os.remove(input_path)
