@@ -1,0 +1,16 @@
+# Tiny code-only layer on the proven Context 22 Extender base.
+# That base already includes CUDA 13, PyTorch, SageAttention 2.2.0,
+# ComfyUI, pinned tritant Extender nodes, ErosMax/H3 weights and R2 LoRA helper.
+#
+# Immutable manifest from successful isolated GHCR build, 2026-11-09:
+# https://github.com/towtsubac-dev/comfyui-runpod-serverless-erosmax/actions/runs/42596086457
+# No model download, apt install, Python dependencies or CUDA compile here.
+FROM --platform=linux/amd64 ghcr.io/towtsubac-dev/comfyui-runpod-serverless-erosmax@sha256:9ba7121bd64b86f798b97deaec7b1d1aca4bcfe9e64cc361046d50ee790111ff
+
+# BuildKit COPY --link permits reusing the already-published image layers
+# without rerunning the 30+ minute baseline image build, if the build
+# service supports image rebase and has access to this GHCR base.
+COPY --link handler.py h3_extender_poc.py registered_lora.py /workspace/
+
+WORKDIR /workspace
+CMD ["python", "/workspace/handler.py"]
