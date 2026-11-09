@@ -1,9 +1,10 @@
-name: ErosMax v11 Flash Preview CPU Checks
+name: ErosMax Flash Preview CPU Checks
 
 on:
   push:
     branches:
       - feature/erosmax-v11-flash-preview
+      - fix/erosmax-slow-fade-v12-preview
   workflow_dispatch:
 
 permissions:

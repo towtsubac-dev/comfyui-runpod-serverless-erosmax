@@ -7,7 +7,20 @@ ENV CUDA_HOME=/usr/local/cuda-13.0
 ENV PATH=/usr/local/cuda-13.0/bin:$PATH
 ENV TORCH_CUDA_ARCH_LIST="8.9;12.0"
 ENV MAX_JOBS=2
-RUN apt-get update && apt-get install -y --no-install-recommends git gcc g++ ninja-build libgomp1 && rm -rf /var/lib/apt/lists/*
+# Avoid port-80 Ubuntu mirror failures; retry transient HTTPS failures.
+RUN set -eu; \
+    for source in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list; do \
+        [ -f "$source" ] || continue; \
+        sed -i \
+            -e 's|http://archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+            -e 's|http://security.ubuntu.com/ubuntu|https://security.ubuntu.com/ubuntu|g' \
+            "$source"; \
+    done; \
+    apt-get update -o Acquire::Retries=5 -o Acquire::https::Timeout=25 \
+        -o APT::Update::Error-Mode=any; \
+    apt-get install -y -o Acquire::Retries=5 --no-install-recommends \
+        git gcc g++ ninja-build libgomp1; \
+    rm -rf /var/lib/apt/lists/*
 RUN pip install --break-system-packages --no-cache-dir packaging ninja setuptools wheel
 RUN git clone --depth 1 --branch v2.2.0 https://github.com/thu-ml/SageAttention.git /tmp/SageAttention
 RUN cd /tmp/SageAttention && pip wheel --no-build-isolation --no-deps -w /tmp/sage-wheels .
@@ -19,14 +32,20 @@ ENV PYTHONUNBUFFERED=1
 ENV HF_HOME=/workspace/huggingface
 ENV HF_HUB_ENABLE_HF_TRANSFER=1
 
-RUN apt-get update && apt-get install -y \
-    git \
-    ffmpeg \
-    gcc \
-    g++ \
-    libgl1 \
-    libglib2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
+# Both Ubuntu sources in this stage must use HTTPS too.
+RUN set -eu; \
+    for source in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list; do \
+        [ -f "$source" ] || continue; \
+        sed -i \
+            -e 's|http://archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+            -e 's|http://security.ubuntu.com/ubuntu|https://security.ubuntu.com/ubuntu|g' \
+            "$source"; \
+    done; \
+    apt-get update -o Acquire::Retries=5 -o Acquire::https::Timeout=25 \
+        -o APT::Update::Error-Mode=any; \
+    apt-get install -y -o Acquire::Retries=5 \
+        git ffmpeg gcc g++ libgl1 libglib2.0-0; \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace
 
