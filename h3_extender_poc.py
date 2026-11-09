@@ -74,7 +74,7 @@ def normalize_extender_loras(loras=None) -> list[dict]:
             raise ValueError("Extender LoRAs must be resolved filename/strength objects.")
         name = item.get("filename")
         if not isinstance(name, str) or not re.fullmatch(
-            r"library_[a-z0-9][a-z0-9_-]{0,63}_[a-f0-9]{16}\\.safetensors", name
+            r"library_[a-z0-9][a-z0-9_-]{0,63}_[a-f0-9]{16}\.safetensors", name
         ):
             raise ValueError("Extender LoRA must be a verified library safetensors filename.")
         if name in seen:
@@ -146,13 +146,12 @@ def build_workflow(
     if not width or not height or width % 32 or height % 32:
         raise ValueError("PoC source width/height must be multiples of 32.")
     continuation_frame_plan(seconds, context_length)
-    ordered_loras = normalize_extender_loras(loras)
     if int(steps) != 8:
         raise ValueError("PoC is fixed at 8 sampling steps.")
 
     clips_json = json.dumps(
         {"version": 2, "generation_mode": "ref2va", "motion_context": True,
-         "clips": [_default_clip(prompt, seconds, seed, context_length, ordered_loras)],
+         "clips": [_default_clip(prompt, seconds, seed, context_length, loras)],
          "continue_video_resize": {"mode": "original"}},
         ensure_ascii=False,
         separators=(",", ":"),
