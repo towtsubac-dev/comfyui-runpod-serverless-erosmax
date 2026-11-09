@@ -5,6 +5,7 @@ on:
     branches:
       - feature/erosmax-h3-extender-poc
       - fix/erosmax-h3-extender-context22-5s-preview
+      - feature/erosmax-extender-lora-preview
   pull_request:
     paths:
       - Dockerfile.extender-poc
