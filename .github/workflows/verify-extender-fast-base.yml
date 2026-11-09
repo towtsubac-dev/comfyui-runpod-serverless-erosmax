@@ -42,5 +42,5 @@ jobs:
               if not line or line.startswith("#"):
                   continue
               assert not line.startswith(("RUN ", "ADD ", "ARG ")), line
-          print("Only existing base layers and three Python overlays are required.")
+          print("Only existing base layers and four Python overlays are required.")
           PY
