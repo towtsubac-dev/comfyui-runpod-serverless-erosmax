@@ -1308,6 +1308,133 @@ def h3_extend_generate(job_input):
                 os.remove(input_path)
 
 
+
+def h3_extender_probe():
+    """Report actual installed ComfyUI node sockets; never queue a GPU job."""
+    from h3_extender_poc import summarize_comfy_contract
+    ensure_comfyui()
+    response = requests.get(f"{COMFYUI_URL}/object_info", timeout=90)
+    response.raise_for_status()
+    return summarize_comfy_contract(response.json())
+
+
+def h3_extender_generate(job_input):
+    """Isolated one-clip v3.0.14 Extender PoC, not used by Studio Production."""
+    import glob
+    import tempfile
+    from h3_extender_poc import build_workflow
+
+    prompt = str(job_input.get("prompt") or "").strip()
+    if not prompt:
+        raise ValueError("Missing input.prompt.")
+    if job_input.get("loras") or job_input.get("lora"):
+        raise ValueError("Extender PoC does not support LoRAs yet; use no LoRAs.")
+    seconds = int(job_input.get("extend_seconds", 5))
+    if seconds != 5:
+        raise ValueError("Extender PoC is limited to a single 5-second continuation.")
+
+    video_url = job_input.get("video_url")
+    video_b64 = job_input.get("video")
+    if not video_url and not video_b64:
+        raise ValueError("Missing input.video or input.video_url.")
+
+    contract = h3_extender_probe()
+    if contract["missing"]:
+        raise RuntimeError("Missing Extender PoC nodes: " + ", ".join(contract["missing"]))
+
+    job_id = uuid.uuid4().hex
+    filename = f"eros_h3_extender_poc_{job_id}.mp4"
+    output_prefix = f"ErosH3Extender_PoC_{job_id}"
+    input_path = os.path.join(COMFYUI_DIR, "input", filename)
+    try:
+        if video_url:
+            from urllib.parse import urlparse
+            parsed = urlparse(str(video_url))
+            if parsed.scheme != "https" or not parsed.hostname:
+                raise ValueError("input.video_url must be a valid HTTPS URL.")
+            response = requests.get(video_url, timeout=90)
+            response.raise_for_status()
+            video_bytes = response.content
+        else:
+            video_bytes = base64.b64decode(str(video_b64).split(",")[-1], validate=True)
+
+        if not video_bytes or len(video_bytes) > 100 * 1024 * 1024:
+            raise ValueError("Input video must be 1-100 MiB.")
+        os.makedirs(os.path.dirname(input_path), exist_ok=True)
+        with open(input_path, "wb") as handle:
+            handle.write(video_bytes)
+
+        meta = _probe_video(input_path)
+        if not (0 < float(meta["duration"]) <= 120):
+            raise ValueError("Source video must be 0-120 seconds.")
+        if int(meta["width"]) % 32 or int(meta["height"]) % 32:
+            raise ValueError("PoC requires source dimensions divisible by 32.")
+        seed = int(job_input.get("seed", 123456))
+        context_length = int(job_input.get("context_length", 5))
+        workflow = build_workflow(
+            video_filename=filename,
+            prompt=prompt,
+            width=int(meta["width"]),
+            height=int(meta["height"]),
+            seed=seed,
+            model_filename=DIFFUSION_MODEL,
+            clip_filename=TEXT_ENCODER,
+            video_vae_filename=VIDEO_VAE,
+            audio_vae_filename=AUDIO_VAE,
+            seconds=seconds,
+            context_length=context_length,
+            steps=8,
+            filename_prefix=output_prefix,
+        )
+        print(
+            f"[EROS EXTENDER POC] native VIDEO; ref2va; Motion Context ON; "
+            f"context={context_length}; frames=5s; source={meta['width']}x{meta['height']}; "
+            f"seed={seed}",
+            flush=True,
+        )
+        prompt_id = queue_prompt(workflow)
+        record = wait_for_result(prompt_id, timeout=DEFAULT_TIMEOUT)
+
+        # Extender Final Decode reports custom h3_video UI metadata rather
+        # than the standard SaveVideo videos[] array. Its documented full_batch
+        # path writes the final file into the normal ComfyUI output directory.
+        candidates = glob.glob(os.path.join(
+            COMFYUI_DIR, "output", output_prefix + "*.mp4"
+        ))
+        if not candidates:
+            node_keys = {
+                str(node_id): list(value.keys()) if isinstance(value, dict) else []
+                for node_id, value in (record.get("outputs") or {}).items()
+            }
+            raise RuntimeError(
+                "Extender PoC completed without an output MP4. "
+                f"ComfyUI output keys: {node_keys}"
+            )
+        final_path = max(candidates, key=os.path.getmtime)
+        with open(final_path, "rb") as handle:
+            data = handle.read()
+        if len(data) > 14_000_000:
+            raise RuntimeError(
+                "Extender PoC output exceeds safe RunPod inline limit (14 MB); "
+                "video remains on the test worker only."
+            )
+        return {
+            "status": "ok",
+            "mode": "h3_extender_poc",
+            "prompt_id": prompt_id,
+            "node_revision": contract["upstream_sha"],
+            "context_length": context_length,
+            "outputs": [{
+                "type": "videos",
+                "filename": output_prefix + ".mp4",
+                "data": base64.b64encode(data).decode("ascii"),
+            }],
+        }
+    finally:
+        if os.path.isfile(input_path):
+            os.remove(input_path)
+
+
 def handler(job):
     job_input = job.get("input", {})
     action = job_input.get("action", "h3_generate")
@@ -1320,6 +1447,10 @@ def handler(job):
             return h3_check()
         if action == "h3_extend_generate":
             return h3_extend_generate(job_input)
+        if action == "h3_extender_probe":
+            return h3_extender_probe()
+        if action == "h3_extender_generate":
+            return h3_extender_generate(job_input)
         if action == "cache_check":
             return cache_check()
         if action in {"h3_generate", "h3_i2v_generate", "generate"}:
