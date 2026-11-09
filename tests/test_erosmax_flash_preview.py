@@ -6,7 +6,7 @@ import unittest
 import numpy as np
 
 HANDLER = Path(__file__).resolve().parents[1] / "handler.py"
-NAMES = {"_v10_flash_plan", "_v11_fade_flash_plan", "_v12_slow_fade_flash_plan"}
+NAMES = {"_v10_flash_plan", "_v11_fade_flash_plan", "_v12_slow_fade_flash_plan", "_v13_isolated_flash_plan"}
 
 
 def load_detectors():
@@ -16,10 +16,10 @@ def load_detectors():
     standalone = ast.fix_missing_locations(ast.Module(body=functions, type_ignores=[]))
     scope = {}
     exec(compile(standalone, str(HANDLER), "exec"), scope)
-    return scope["_v10_flash_plan"], scope["_v11_fade_flash_plan"], scope["_v12_slow_fade_flash_plan"]
+    return scope["_v10_flash_plan"], scope["_v11_fade_flash_plan"], scope["_v12_slow_fade_flash_plan"], scope["_v13_isolated_flash_plan"]
 
 
-v10, v11, v12 = load_detectors()
+v10, v11, v12, v13 = load_detectors()
 
 
 def fixture(kind):
@@ -64,6 +64,7 @@ class FlashDetectorTests(unittest.TestCase):
         self.assertIsNone(v10(frames, source, "synthetic"))
         self.assertIsNone(v11(frames, source))
         self.assertIsNone(v12(frames, source))
+        self.assertIsNone(v13(frames, source))
 
     def test_long_slow_fade_matching_real_erosmax_log(self):
         # Reproduce the shape seen in the 2026-11-09 ErosMax test log:
@@ -104,6 +105,57 @@ class FlashDetectorTests(unittest.TestCase):
         source, frames = fixture("single")
         self.assertIsNotNone(v10(frames, source, "synthetic"))
         self.assertIsNone(v12(frames, source))
+
+    def test_v13_isolated_flash_with_continuing_source_scene(self):
+        # ErosMax 2026-11-09: source=0.7677, first=0.8774,
+        # second=0.7683; source correlation ~0.903, next ~0.908,
+        # first-next correlation >0.94.
+        rng = np.random.default_rng(2026110914)
+        source = rng.uniform(0.20, 0.65, size=(90, 160, 3)).astype(np.float32)
+        variation = rng.normal(0, 0.065, size=source.shape).astype(np.float32)
+        continuation = np.clip(source + variation, 0, 1)
+        frames = np.repeat(continuation[None, ...], 18, axis=0)
+        frames[0] = np.clip(continuation + np.float32(0.109), 0, 1)
+        # v10 rejects a somewhat changed scene despite high continuity.
+        self.assertIsNone(v10(frames, source, "synthetic"))
+        self.assertIsNone(v11(frames, source))
+        self.assertIsNone(v12(frames, source))
+        plan = v13(frames, source)
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan["anchor"], 1)
+        self.assertEqual(len(plan["offsets"]), 1)
+        self.assertLessEqual(plan["offsets"][0], -18)
+
+    def test_v13_normal_motion_without_flash_stays_unchanged(self):
+        source, frames = fixture("unrelated")
+        self.assertIsNone(v13(frames, source))
+        source, frames = fixture("single")
+        # Existing high-correlation v10 detector handles this; v13
+        # should not override it in the repair dispatcher.
+        self.assertIsNotNone(v10(frames, source, "synthetic"))
+
+    def test_v13_persistent_brightness_change_stays_unchanged(self):
+        rng = np.random.default_rng(202611092)
+        source = rng.uniform(0.20, 0.65, size=(90, 160, 3)).astype(np.float32)
+        frames = np.repeat(np.clip(source + 0.11, 0, 1)[None, ...], 18, axis=0)
+        self.assertIsNone(v13(frames, source))
+
+    def test_v13_unrelated_first_frame_stays_unchanged(self):
+        rng = np.random.default_rng(202611093)
+        source = rng.uniform(0.20, 0.65, size=(90, 160, 3)).astype(np.float32)
+        different = rng.uniform(0.20, 0.65, size=(90, 160, 3)).astype(np.float32)
+        frames = np.repeat(different[None, ...], 18, axis=0)
+        frames[0] = np.clip(different + 0.11, 0, 1)
+        self.assertIsNone(v13(frames, source))
+
+    def test_v13_colored_flash_stays_unchanged(self):
+        rng = np.random.default_rng(202611094)
+        source = rng.uniform(0.20, 0.65, size=(90, 160, 3)).astype(np.float32)
+        variation = rng.normal(0, 0.065, size=source.shape).astype(np.float32)
+        continuation = np.clip(source + variation, 0, 1)
+        frames = np.repeat(continuation[None, ...], 18, axis=0)
+        frames[0] = np.clip(continuation + np.array([0.22, 0.08, 0.03], dtype=np.float32), 0, 1)
+        self.assertIsNone(v13(frames, source))
 
     def test_preview_opt_in_and_y_only(self):
         content = HANDLER.read_text(encoding="utf-8")
