@@ -71,12 +71,20 @@ class FlashDetectorTests(unittest.TestCase):
         rng = np.random.default_rng(20261109)
         source = rng.uniform(0.25, 0.70, size=(90, 160, 3)).astype(np.float32)
         frames = np.repeat(source[None, ...], 18, axis=0)
+        # Include natural scene/motion change: the real first-frame
+        # correlation was 0.904, below v10's 0.92 requirement.
+        scene_noise = rng.uniform(0.25, 0.70, size=(90, 160, 3)).astype(np.float32)
+        alphas = [0.68, 0.69, 0.74, 0.80, 0.80, 0.82, 0.82,
+                  0.82, 0.80, 0.75, 0.72, 0.70, 0.69]
         for i, offset in enumerate([
             0.108, 0.104, 0.098, 0.088, 0.086,
             0.070, 0.050, 0.048, 0.035, 0.012,
             -0.008, -0.015, -0.019,
         ]):
-            frames[i] = np.clip(source + np.float32(offset), 0, 1)
+            frames[i] = np.clip(
+                source * alphas[i] + scene_noise * (1 - alphas[i])
+                + np.float32(offset), 0, 1
+            )
         self.assertIsNone(v10(frames, source, "synthetic"))
         self.assertIsNone(v11(frames, source))
         plan = v12(frames, source)
