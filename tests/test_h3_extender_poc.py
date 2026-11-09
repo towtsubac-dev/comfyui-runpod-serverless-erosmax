@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import unittest
 
-from h3_extender_poc import build_workflow, summarize_comfy_contract, UPSTREAM_SHA
+from h3_extender_poc import build_workflow, summarize_comfy_contract, continuation_frame_plan, UPSTREAM_SHA
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -54,6 +54,43 @@ class ExtenderPocTests(unittest.TestCase):
         self.assertEqual(cfg["prompt"], "the same woman continues smiling")
         self.assertEqual(cfg["loras"], [])
         self.assertEqual(len(json.loads(nodes["7"]["inputs"]["refs_json"])["refs"]), 9)
+
+    def test_context22_pads_native_frames_for_equal_visible_duration(self):
+        context5 = continuation_frame_plan(5, 5)
+        context22 = continuation_frame_plan(5, 22)
+        self.assertEqual(context5["native_frames"], 124)
+        self.assertEqual(context22["native_frames"], 141)
+        self.assertEqual(context5["visible_frames"], 119)
+        self.assertEqual(context22["visible_frames"], 119)
+        self.assertEqual(context5["native_frames"] - 5, 119)
+        self.assertEqual(context22["native_frames"] - 22, 119)
+        self.assertEqual(context5["clip_duration_seconds"], 5.0)
+        self.assertEqual(context22["clip_duration_seconds"], 5.875)
+        self.assertEqual(context5["native_frames"] % 17, 5)
+        self.assertEqual(context22["native_frames"] % 17, 5)
+
+        # Upstream _duration_to_frames rounds duration*24 and then aligns UP
+        # to the next H3 17k+5 frame count.
+        def upstream_frame_count(duration):
+            n = max(5, round(duration * 24))
+            while n % 17 != 5:
+                n += 1
+            return n
+        self.assertEqual(upstream_frame_count(context5["clip_duration_seconds"]), 124)
+        self.assertEqual(upstream_frame_count(context22["clip_duration_seconds"]), 141)
+
+    def test_context22_video_workflow_preserves_context_and_fixed_seed(self):
+        context5 = workflow(context_length=5)
+        context22 = workflow(context_length=22, seed=123456)
+        inputs = context22["7"]["inputs"]
+        self.assertEqual(inputs["context_length"], "22")
+        cfg = json.loads(inputs["clips_json"])["clips"][0]
+        self.assertEqual(cfg["duration"], 5.875)
+        self.assertEqual(cfg["seed_mode"], "fixed")
+        self.assertEqual(cfg["seed"], 123456)
+        self.assertEqual(context5["7"]["inputs"]["context_length"], "5")
+        self.assertEqual(json.loads(context5["7"]["inputs"]["clips_json"])["clips"][0]["duration"], 5.0)
+        self.assertEqual(context22["8"]["inputs"]["cache"], ["7", 0])
 
     def test_invalid_inputs_fail_early(self):
         for data in (
