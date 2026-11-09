@@ -3,7 +3,7 @@ name: Build H3 Extender PoC Image (isolated tag)
 on:
   push:
     branches:
-      - feature/erosmax-h3-extender-poc
+      - fix/erosmax-h3-extender-context22-5s-preview
     paths:
       - .github/workflows/build-h3-extender-poc-image.yml
 
@@ -48,7 +48,7 @@ jobs:
           platforms: linux/amd64
           push: true
           provenance: false
-          tags: ghcr.io/towtsubac-dev/comfyui-runpod-serverless-erosmax:h3-extender-poc-20261109
+          tags: ghcr.io/towtsubac-dev/comfyui-runpod-serverless-erosmax:h3-extender-context22-5s-v2-20261109
 
       - name: Show image URL
-        run: echo "ghcr.io/towtsubac-dev/comfyui-runpod-serverless-erosmax:h3-extender-poc-20261109"
+        run: echo "ghcr.io/towtsubac-dev/comfyui-runpod-serverless-erosmax:h3-extender-context22-5s-v2-20261109"
