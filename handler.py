@@ -1322,7 +1322,7 @@ def h3_extender_generate(job_input):
     """Isolated one-clip v3.0.14 Extender PoC, not used by Studio Production."""
     import glob
     import tempfile
-    from h3_extender_poc import build_workflow
+    from h3_extender_poc import build_workflow, continuation_frame_plan
 
     prompt = str(job_input.get("prompt") or "").strip()
     if not prompt:
@@ -1371,6 +1371,7 @@ def h3_extender_generate(job_input):
             raise ValueError("PoC requires source dimensions divisible by 32.")
         seed = int(job_input.get("seed", 123456))
         context_length = int(job_input.get("context_length", 5))
+        frame_plan = continuation_frame_plan(seconds, context_length)
         workflow = build_workflow(
             video_filename=filename,
             prompt=prompt,
@@ -1388,7 +1389,9 @@ def h3_extender_generate(job_input):
         )
         print(
             f"[EROS EXTENDER POC] native VIDEO; ref2va; Motion Context ON; "
-            f"context={context_length}; frames=5s; source={meta['width']}x{meta['height']}; "
+            f"context={context_length}; native_frames={frame_plan['native_frames']}; "
+            f"expected_visible_frames={frame_plan['visible_frames']}; "
+            f"source={meta['width']}x{meta['height']}; "
             f"seed={seed}",
             flush=True,
         )
@@ -1424,6 +1427,7 @@ def h3_extender_generate(job_input):
             "prompt_id": prompt_id,
             "node_revision": contract["upstream_sha"],
             "context_length": context_length,
+            "frame_plan": frame_plan,
             "outputs": [{
                 "type": "videos",
                 "filename": output_prefix + ".mp4",
