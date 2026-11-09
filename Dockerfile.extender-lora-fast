@@ -10,7 +10,7 @@ FROM --platform=linux/amd64 ghcr.io/towtsubac-dev/comfyui-runpod-serverless-eros
 # BuildKit COPY --link permits reusing the already-published image layers
 # without rerunning the 30+ minute baseline image build, if the build
 # service supports image rebase and has access to this GHCR base.
-COPY --link handler.py h3_extender_poc.py registered_lora.py /workspace/
+COPY --link handler.py h3_extender_poc.py registered_lora.py extender_r2_io.py /workspace/
 
 WORKDIR /workspace
 CMD ["python", "/workspace/handler.py"]
