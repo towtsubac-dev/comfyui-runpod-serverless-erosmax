@@ -86,6 +86,7 @@ COPY download_models.py /workspace/download_models.py
 # skips downloads when they are already present.
 RUN python /workspace/download_models.py
 
+COPY h3_extender_poc.py /workspace/h3_extender_poc.py
 COPY handler.py /workspace/handler.py
 COPY registered_lora.py /workspace/registered_lora.py
 
