@@ -1327,8 +1327,6 @@ def h3_extender_generate(job_input):
     prompt = str(job_input.get("prompt") or "").strip()
     if not prompt:
         raise ValueError("Missing input.prompt.")
-    if job_input.get("loras") or job_input.get("lora"):
-        raise ValueError("Extender PoC does not support LoRAs yet; use no LoRAs.")
     seconds = int(job_input.get("extend_seconds", 5))
     if seconds != 5:
         raise ValueError("Extender PoC is limited to a single 5-second continuation.")
@@ -1372,6 +1370,11 @@ def h3_extender_generate(job_input):
         seed = int(job_input.get("seed", 123456))
         context_length = int(job_input.get("context_length", 5))
         frame_plan = continuation_frame_plan(seconds, context_length)
+        # Existing ErosMax library downloader validates the R2 host, SHA-256,
+        # safetensors structure and per-item strength before returning filenames.
+        # Preserve user-specified LoRA order. The Extender node itself applies
+        # these model-only patches per clip; do not chain global LoraLoader nodes.
+        resolved_loras = optional_lora(job_input)
         workflow = build_workflow(
             video_filename=filename,
             prompt=prompt,
@@ -1386,13 +1389,14 @@ def h3_extender_generate(job_input):
             context_length=context_length,
             steps=8,
             filename_prefix=output_prefix,
+            loras=resolved_loras,
         )
         print(
             f"[EROS EXTENDER POC] native VIDEO; ref2va; Motion Context ON; "
             f"context={context_length}; native_frames={frame_plan['native_frames']}; "
             f"expected_visible_frames={frame_plan['visible_frames']}; "
             f"source={meta['width']}x{meta['height']}; "
-            f"seed={seed}",
+            f"seed={seed}; loras={len(resolved_loras)}",
             flush=True,
         )
         prompt_id = queue_prompt(workflow)
@@ -1428,6 +1432,7 @@ def h3_extender_generate(job_input):
             "node_revision": contract["upstream_sha"],
             "context_length": context_length,
             "frame_plan": frame_plan,
+            "lora_count": len(resolved_loras),
             "outputs": [{
                 "type": "videos",
                 "filename": output_prefix + ".mp4",
