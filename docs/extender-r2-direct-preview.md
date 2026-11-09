@@ -15,7 +15,7 @@ bytes to stay below RunPod's inline response size. Thus a normal 10-second
    presign a single PUT to a random
    `video/staging/extender/<uuid>.mp4` key, 1-hour expiry.
    The Studio server also produces an HMAC receipt proof with the existing
-   `UPLOAD_SECRET` valid for up to 24 hours. The signed PUT URL is sent only
+   `SESSION_SECRET` valid for up to 24 hours. The signed PUT URL is sent only
    to the RunPod job, not to the user's browser.
 2. The worker streams Studio's signed R2 source GET directly to its
    ComfyUI input file. Only HTTPS account R2 API URLs, a Studio
