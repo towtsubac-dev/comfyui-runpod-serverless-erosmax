@@ -7,6 +7,8 @@ A GPU test is required to establish checkpoint and ComfyUI compatibility.
 from __future__ import annotations
 
 import json
+import math
+import re
 import uuid
 
 
@@ -53,8 +55,45 @@ def continuation_frame_plan(seconds: int, context_length: int) -> dict:
         "clip_duration_seconds": 5.0 if context == 5 else native_frames / fps,
     }
 
+def normalize_extender_loras(loras=None) -> list[dict]:
+    """Validate a bounded, ordered MODEL-only stack for Extender clip 1.
 
-def _default_clip(prompt: str, seconds: int, seed: int, context_length: int = 5) -> dict:
+    Names are filenames returned by the existing verified R2 download helper,
+    never remote URLs or client-supplied paths. We do not chain model loaders
+    globally: upstream Extender supports per-clip LoRAs and patches its own
+    incoming MODEL only while generating that clip.
+    """
+    if loras is None:
+        return []
+    if not isinstance(loras, list) or len(loras) > 5:
+        raise ValueError("Extender supports at most 5 ordered LoRAs.")
+    results = []
+    seen = set()
+    for item in loras:
+        if not isinstance(item, dict):
+            raise ValueError("Extender LoRAs must be resolved filename/strength objects.")
+        name = item.get("filename")
+        if not isinstance(name, str) or not re.fullmatch(
+            r"library_[a-z0-9][a-z0-9_-]{0,63}_[a-f0-9]{16}\\.safetensors", name
+        ):
+            raise ValueError("Extender LoRA must be a verified library safetensors filename.")
+        if name in seen:
+            raise ValueError("Extender LoRA filenames must be unique.")
+        seen.add(name)
+        value = item.get("strength", 1.0)
+        if isinstance(value, bool):
+            raise ValueError("Invalid Extender LoRA strength.")
+        try:
+            strength = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Invalid Extender LoRA strength.") from exc
+        if not math.isfinite(strength) or not 0.0 <= strength <= 2.0:
+            raise ValueError("Extender LoRA strength must be between 0 and 2.")
+        results.append({"name": name, "strength": strength})
+    return results
+
+
+def _default_clip(prompt: str, seconds: int, seed: int, context_length: int = 5, loras=None) -> dict:
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError("A non-empty continuation prompt is required.")
     frame_plan = continuation_frame_plan(seconds, context_length)
@@ -71,7 +110,7 @@ def _default_clip(prompt: str, seconds: int, seed: int, context_length: int = 5)
         "color_adjustment": {
             "saturation": 100.0, "contrast": 100.0, "brightness": 100.0,
         },
-        "loras": [],
+        "loras": normalize_extender_loras(loras),
         "local_refs": {"version": 1, "images": [], "videos": [], "audios": []},
         "first_frame": None,
         "last_frame": None,
@@ -95,23 +134,25 @@ def build_workflow(
     context_length: int = 5,
     steps: int = 8,
     filename_prefix: str | None = None,
+    loras: list[dict] | None = None,
 ) -> dict:
     """Build native LoadVideo → Extender → Final Decode ComfyUI API JSON.
 
-    Refine, additional LoRAs, and source-image reference management are
-    intentionally disabled for the first single-inference comparison.
+    Upstream Extender owns the per-clip model-only LoRA loader. Refine and
+    source-image reference management remain disabled in this isolated PoC.
     """
     if not video_filename or "/" in video_filename or "\\" in video_filename:
         raise ValueError("video_filename must be a single basename in ComfyUI/input.")
     if not width or not height or width % 32 or height % 32:
         raise ValueError("PoC source width/height must be multiples of 32.")
     continuation_frame_plan(seconds, context_length)
+    ordered_loras = normalize_extender_loras(loras)
     if int(steps) != 8:
         raise ValueError("PoC is fixed at 8 sampling steps.")
 
     clips_json = json.dumps(
         {"version": 2, "generation_mode": "ref2va", "motion_context": True,
-         "clips": [_default_clip(prompt, seconds, seed, context_length)],
+         "clips": [_default_clip(prompt, seconds, seed, context_length, ordered_loras)],
          "continue_video_resize": {"mode": "original"}},
         ensure_ascii=False,
         separators=(",", ":"),
