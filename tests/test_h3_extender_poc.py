@@ -1,9 +1,10 @@
 """No-GPU contract checks for the isolated H3 Extender v3.0.14 PoC."""
 import json
+import math
 from pathlib import Path
 import unittest
 
-from h3_extender_poc import build_workflow, summarize_comfy_contract, continuation_frame_plan, UPSTREAM_SHA
+from h3_extender_poc import build_workflow, summarize_comfy_contract, continuation_frame_plan, normalize_extender_loras, UPSTREAM_SHA
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -91,6 +92,65 @@ class ExtenderPocTests(unittest.TestCase):
         self.assertEqual(context5["7"]["inputs"]["context_length"], "5")
         self.assertEqual(json.loads(context5["7"]["inputs"]["clips_json"])["clips"][0]["duration"], 5.0)
         self.assertEqual(context22["8"]["inputs"]["cache"], ["7", 0])
+
+    @staticmethod
+    def lora(name="portrait", prefix="a", strength=1.0):
+        return {"filename": f"library_{name}_{prefix * 16}.safetensors",
+                "strength": strength}
+
+    def test_clip_lora_stack_keeps_order_and_strength_context5_and_22(self):
+        chosen = [
+            self.lora("first", "a", 0.25),
+            self.lora("second", "b", 1.0),
+            self.lora("third", "c", 1.7),
+            self.lora("fourth", "d", 2.0),
+        ]
+        expected = [{"name": x["filename"], "strength": x["strength"]} for x in chosen]
+        for context in (5, 22):
+            with self.subTest(context=context):
+                nodes = workflow(context_length=context, loras=chosen)
+                cfg = json.loads(nodes["7"]["inputs"]["clips_json"])["clips"][0]
+                self.assertEqual(cfg["loras"], expected)
+                self.assertEqual(cfg["duration"], 5.0 if context == 5 else 5.875)
+                # Per-clip upstream support; don't add global model patch nodes.
+                self.assertEqual(nodes["6"]["inputs"]["model"], ["2", 0])
+                self.assertEqual(sorted(nodes.keys()), [str(i) for i in range(1, 9)])
+
+    def test_no_lora_and_max_five_are_valid(self):
+        self.assertEqual(normalize_extender_loras(None), [])
+        self.assertEqual(normalize_extender_loras([]), [])
+        five = [self.lora("pick" + str(i), str(i), i / 2) for i in range(5)]
+        self.assertEqual(len(normalize_extender_loras(five)), 5)
+        self.assertEqual(len(json.loads(workflow(loras=five)["7"]["inputs"]["clips_json"])["clips"][0]["loras"]), 5)
+
+    def test_lora_stack_rejects_invalid_and_duplicate_entries(self):
+        x = self.lora()
+        invalid = [
+            "not-a-list", [x] * 2, [self.lora(str(i), str(i)) for i in range(6)],
+            [{"name": "user-input.safetensors", "strength": 1.0}],
+            [{"filename": "../escape.safetensors", "strength": 1.0}],
+            [{"filename": "mismatch.safetensors", "strength": 1.0}],
+            [self.lora(strength=-0.1)], [self.lora(strength=2.1)],
+            [self.lora(strength=float("nan"))], [self.lora(strength=float("inf"))],
+            [self.lora(strength=True)], [self.lora(strength="abc")],
+            [self.lora(strength=None)], [None],
+        ]
+        for case in invalid:
+            with self.subTest(case=str(case)[:70]):
+                with self.assertRaises(ValueError):
+                    workflow(loras=case)
+
+    def test_backend_uses_existing_registered_download_without_global_loader(self):
+        src = (ROOT / "handler.py").read_text(encoding="utf-8")
+        section = src.split("def h3_extender_generate(job_input):", 1)[1].split("def handler(job):", 1)[0]
+        self.assertIn("resolved_loras = optional_lora(job_input)", section)
+        self.assertIn("loras=resolved_loras", section)
+        self.assertIn('"lora_count": len(resolved_loras)', section)
+        self.assertNotIn("apply_optional_lora(workflow", section)
+        lib = (ROOT / "registered_lora.py").read_text(encoding="utf-8")
+        self.assertIn("sha256", lib)
+        self.assertIn("safetensors", lib)
+        self.assertIn("allow_redirects=False", lib)
 
     def test_invalid_inputs_fail_early(self):
         for data in (
