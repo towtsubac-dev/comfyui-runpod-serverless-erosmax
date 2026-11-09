@@ -4,8 +4,11 @@ on:
   push:
     branches:
       - fix/erosmax-extender-lora-fast-build
+      - feature/erosmax-extender-r2-direct-preview
     paths:
       - Dockerfile.extender-lora-fast
+      - extender_r2_io.py
+      - tests/test_h3_extender_r2_io.py
       - .github/workflows/verify-extender-fast-base.yml
   workflow_dispatch:
 
@@ -25,15 +28,15 @@ jobs:
           echo "GHCR base is anonymously readable at the pinned digest."
       - name: Validate Python source and isolated contract
         run: |
-          python -m py_compile handler.py h3_extender_poc.py registered_lora.py
-          python -m unittest discover -s tests -p 'test_h3_extender_poc.py' -v
+          python -m py_compile handler.py h3_extender_poc.py registered_lora.py extender_r2_io.py tests/test_h3_extender_r2_io.py
+          python -m unittest discover -s tests -p 'test_h3_extender*.py' -v
       - name: Confirm fast Dockerfile is copy-only after FROM
         run: |
           python - <<'PY'
           from pathlib import Path
           source = Path("Dockerfile.extender-lora-fast").read_text()
           assert "FROM --platform=linux/amd64 ghcr.io/towtsubac-dev/comfyui-runpod-serverless-erosmax@sha256:" in source
-          assert "COPY --link handler.py h3_extender_poc.py registered_lora.py /workspace/" in source
+          assert "COPY --link handler.py h3_extender_poc.py registered_lora.py extender_r2_io.py /workspace/" in source
           for line in source.splitlines():
               line = line.strip()
               if not line or line.startswith("#"):
