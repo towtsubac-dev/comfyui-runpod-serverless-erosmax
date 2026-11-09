@@ -845,6 +845,83 @@ def _v11_fade_flash_plan(frames, source):
     }
 
 
+
+def _v12_slow_fade_flash_plan(frames, source):
+    """ErosMax-specific 8-14 frame fade fallback for a source-matching exposure flash.
+
+    Keep v10/v11 decisions unchanged. A scene transition or persistent
+    lighting change must not be corrected: require high source correlation,
+    sustained decay and a stabilized recovery near the source brightness.
+    """
+    import numpy as np
+    if len(frames) < 15:
+        return None
+    weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    means = (frames @ weights).mean(axis=(1, 2))
+    reference = source @ weights
+    source_mean = float(reference.mean())
+    if (
+        float(reference.std()) < 0.025
+        or float(means[0] - source_mean) < 0.085
+        or float(np.min(means[:3]) - source_mean) < 0.065
+    ):
+        return None
+
+    corrs = []
+    for frame in frames[:16]:
+        luminance = frame @ weights
+        if float(luminance.std()) < 0.025:
+            return None
+        corrs.append(float(np.corrcoef(reference.ravel(), luminance.ravel())[0, 1]))
+    # ErosMax can preserve the scene with a lower initial correlation (~0.90)
+    # than MiniMax v11, while reaching ~0.95 by frames 4-8.
+    if (
+        min(corrs[:4]) < 0.88
+        or max(corrs[2:8]) < 0.935
+        or float(np.median(corrs[2:8])) < 0.91
+    ):
+        return None
+
+    anchor = None
+    for i in range(8, min(15, len(means) - 2)):
+        window = means[i:i + 3]
+        drops = np.diff(means[:i + 1])
+        if not (
+            float(np.ptp(window)) <= 0.021
+            and abs(float(np.median(window) - source_mean)) <= 0.035
+            and abs(float(means[i] - source_mean)) <= 0.030
+            and float(means[0] - means[i]) >= 0.085
+            and float(np.max(drops)) < 0.012
+            and int(np.count_nonzero(drops < -0.006)) >= 5
+            and float(np.min(corrs[:i + 1])) >= 0.86
+            and float(np.mean(corrs[max(i - 2, 0):i + 1])) >= 0.89
+        ):
+            continue
+        anchor = i
+        break
+    if anchor is None:
+        return None
+
+    offsets = []
+    for i in range(anchor):
+        target = source_mean + (float(means[anchor]) - source_mean) * i / anchor
+        offset = int(round((target - float(means[i])) * 219))
+        if abs(offset) > 40:
+            return None
+        offsets.append(offset)
+    print(
+        "[EROS EXTEND FLASH] v12 slow fade confirmed: "
+        f"source={source_mean:.4f} first_18={means[:18].round(4).tolist()} "
+        f"first_corr={[round(c, 3) for c in corrs]} "
+        f"anchor={anchor} offsets={offsets}",
+        flush=True,
+    )
+    return {
+        "start": 0, "anchor": anchor, "offsets": offsets,
+        "source_mean": source_mean, "recovery_mean": float(means[anchor]),
+    }
+
+
 def _repair_extension_start_flash(segment_path, temp_dir, label, original_path=None):
     """Adjust only the Y plane before exposure recovery, preserving v5 motion."""
     if original_path is None:
@@ -857,8 +934,11 @@ def _repair_extension_start_flash(segment_path, temp_dir, label, original_path=N
         plan = _v11_fade_flash_plan(frames, source)
         version = "v11"
     if plan is None:
+        plan = _v12_slow_fade_flash_plan(frames, source)
+        version = "v12"
+    if plan is None:
         print(
-            f"[EROS EXTEND FLASH] {label}: v10/v11 no confirmed exposure flash; unchanged",
+            f"[EROS EXTEND FLASH] {label}: v10/v11/v12 no confirmed exposure flash; unchanged",
             flush=True,
         )
         return segment_path
@@ -1159,7 +1239,7 @@ def handler(job):
     try:
         if action == "health":
             ensure_comfyui()
-            return {"status": "ok", "message": "ComfyUI is running", "eros_extend_revision": "v11-flash-preview", "system_stats": requests.get(f"{COMFYUI_URL}/system_stats", timeout=30).json()}
+            return {"status": "ok", "message": "ComfyUI is running", "eros_extend_revision": "v12-slow-fade-preview", "system_stats": requests.get(f"{COMFYUI_URL}/system_stats", timeout=30).json()}
         if action == "h3_check":
             return h3_check()
         if action == "h3_extend_generate":
@@ -1180,6 +1260,6 @@ if __name__ == "__main__":
     ensure_models()
     start_comfyui()
     wait_for_comfyui()
-    print("[ErosMax] revision=v11-flash-preview; flash=v10+v11 Y-only; Preview opt-in", flush=True)
+    print("[ErosMax] revision=v12-slow-fade-preview; flash=v10+v11 Y-only; Preview opt-in", flush=True)
     print("[ErosMax] Starting RunPod Serverless handler...", flush=True)
     runpod.serverless.start({"handler": handler})
