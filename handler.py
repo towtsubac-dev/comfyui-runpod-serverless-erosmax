@@ -922,6 +922,79 @@ def _v12_slow_fade_flash_plan(frames, source):
     }
 
 
+
+def _v13_isolated_flash_plan(frames, source):
+    """Conservative single-frame fallback for ErosMax continuity flashes.
+
+    Requires the *same source scene* to continue: the first generated frame
+    is overexposed, frames 1-4 are already close to the source brightness,
+    and frame 0 remains structurally similar to both source and frame 1.
+    Do not correct scene cuts, persistent relighting or normal camera motion.
+    """
+    import numpy as np
+    if len(frames) < 6:
+        return None
+
+    weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    reference = source @ weights
+    initial = frames[0] @ weights
+    recovered = frames[1] @ weights
+    reference_mean = float(reference.mean())
+    means = (frames[:6] @ weights).mean(axis=(1, 2))
+    excess = float(means[0] - reference_mean)
+
+    if (
+        float(reference.std()) < 0.025
+        or float(initial.std()) < 0.025
+        or float(recovered.std()) < 0.025
+        or not 0.085 <= excess <= 0.18
+        or float(means[0] - means[1]) < 0.085
+        or float(np.max(np.abs(means[1:5] - reference_mean))) > 0.026
+        or float(np.ptp(means[1:5])) > 0.018
+    ):
+        return None
+
+    # A real single-frame exposure glitch should affect all RGB channels,
+    # not introduce a different-colored frame or new scene.
+    channel_change = frames[0].mean(axis=(0, 1)) - frames[1].mean(axis=(0, 1))
+    if (
+        float(np.min(channel_change)) < 0.07
+        or float(np.ptp(channel_change)) > 0.045
+    ):
+        return None
+
+    source_y = reference.ravel()
+    first_y = initial.ravel()
+    next_y = recovered.ravel()
+    source_corr_first = float(np.corrcoef(source_y, first_y)[0, 1])
+    source_corr_next = float(np.corrcoef(source_y, next_y)[0, 1])
+    first_next_corr = float(np.corrcoef(first_y, next_y)[0, 1])
+    if (
+        source_corr_first < 0.85
+        or source_corr_next < 0.85
+        or first_next_corr < 0.94
+        or first_next_corr - max(source_corr_first, source_corr_next) < 0.025
+    ):
+        return None
+
+    offset = int(round((reference_mean - float(means[0])) * 219))
+    if not -40 <= offset <= -12:
+        return None
+    print(
+        "[EROS EXTEND FLASH] v13 isolated frame confirmed: "
+        f"source={reference_mean:.4f} first_6={means[:6].round(4).tolist()} "
+        f"corr_source_first={source_corr_first:.3f} "
+        f"corr_source_next={source_corr_next:.3f} "
+        f"corr_first_next={first_next_corr:.3f} "
+        f"anchor=1 offsets={[offset]}",
+        flush=True,
+    )
+    return {
+        "start": 0, "anchor": 1, "offsets": [offset],
+        "source_mean": reference_mean, "recovery_mean": float(means[1]),
+    }
+
+
 def _repair_extension_start_flash(segment_path, temp_dir, label, original_path=None):
     """Adjust only the Y plane before exposure recovery, preserving v5 motion."""
     if original_path is None:
@@ -937,8 +1010,11 @@ def _repair_extension_start_flash(segment_path, temp_dir, label, original_path=N
         plan = _v12_slow_fade_flash_plan(frames, source)
         version = "v12"
     if plan is None:
+        plan = _v13_isolated_flash_plan(frames, source)
+        version = "v13"
+    if plan is None:
         print(
-            f"[EROS EXTEND FLASH] {label}: v10/v11/v12 no confirmed exposure flash; unchanged",
+            f"[EROS EXTEND FLASH] {label}: v10/v11/v12/v13 no confirmed exposure flash; unchanged",
             flush=True,
         )
         return segment_path
@@ -1239,7 +1315,7 @@ def handler(job):
     try:
         if action == "health":
             ensure_comfyui()
-            return {"status": "ok", "message": "ComfyUI is running", "eros_extend_revision": "v12-slow-fade-preview", "system_stats": requests.get(f"{COMFYUI_URL}/system_stats", timeout=30).json()}
+            return {"status": "ok", "message": "ComfyUI is running", "eros_extend_revision": "v13-isolated-flash-preview", "system_stats": requests.get(f"{COMFYUI_URL}/system_stats", timeout=30).json()}
         if action == "h3_check":
             return h3_check()
         if action == "h3_extend_generate":
@@ -1260,6 +1336,6 @@ if __name__ == "__main__":
     ensure_models()
     start_comfyui()
     wait_for_comfyui()
-    print("[ErosMax] revision=v12-slow-fade-preview; flash=v10+v11 Y-only; Preview opt-in", flush=True)
+    print("[ErosMax] revision=v13-isolated-flash-preview; flash=v10+v11 Y-only; Preview opt-in", flush=True)
     print("[ErosMax] Starting RunPod Serverless handler...", flush=True)
     runpod.serverless.start({"handler": handler})
