@@ -5,6 +5,7 @@ on:
     branches:
       - feature/erosmax-v11-flash-preview
       - fix/erosmax-slow-fade-v12-preview
+      - fix/erosmax-isolated-flash-v13-preview
   workflow_dispatch:
 
 permissions:
