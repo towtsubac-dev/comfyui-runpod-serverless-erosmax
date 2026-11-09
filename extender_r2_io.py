@@ -12,7 +12,7 @@ STAGING_KEY_RE = re.compile(
     r"^video/staging/extender/[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\.mp4$"
 )
 SOURCE_PATH_RE = re.compile(
-    r"^/[^/]+/uploads/[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\.mp4$"
+    r"^/[a-z0-9][a-z0-9-]{2,62}/uploads/[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\.mp4$"
 )
 MAX_INPUT_BYTES = 100 * 1024 * 1024
 MAX_OUTPUT_BYTES = 512 * 1024 * 1024
@@ -34,7 +34,7 @@ def validate_r2_signed_url(url, *, source=False, staging_key=None):
     else:
         if not isinstance(staging_key, str) or not STAGING_KEY_RE.fullmatch(staging_key):
             raise ValueError("Invalid Extender staging key")
-        if not re.fullmatch(r"/[^/]+/" + re.escape(staging_key), path):
+        if not re.fullmatch(r"/[a-z0-9][a-z0-9-]{2,62}/" + re.escape(staging_key), path):
             raise ValueError("R2 output URL does not match staging key")
     params = parse_qs(p.query)
     if params.get("X-Amz-Algorithm") != ["AWS4-HMAC-SHA256"]:
@@ -74,7 +74,6 @@ def download_r2_source(url, path):
 
 def upload_r2_output(path, descriptor):
     """Stream output to a single-key presigned PUT, without inline base64."""
-    import requests
     if not isinstance(descriptor, dict):
         raise ValueError("Invalid R2 upload descriptor")
     key, url = descriptor.get("key"), descriptor.get("url")
@@ -87,6 +86,7 @@ def upload_r2_output(path, descriptor):
     size = os.path.getsize(path)
     if not 16 <= size <= MAX_OUTPUT_BYTES:
         raise ValueError("Extender output must be 16 bytes to 512 MiB")
+    import requests
     for attempt in range(2):
         try:
             with open(path, "rb") as handle:
