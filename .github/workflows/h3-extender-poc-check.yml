@@ -1,0 +1,30 @@
+name: ErosMax H3 Extender PoC (CPU contract)
+
+on:
+  push:
+    branches:
+      - feature/erosmax-h3-extender-poc
+  pull_request:
+    paths:
+      - Dockerfile.extender-poc
+      - h3_extender_poc.py
+      - handler.py
+      - tests/test_h3_extender_poc.py
+      - .github/workflows/h3-extender-poc-check.yml
+
+jobs:
+  static-contract:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Syntax check
+        run: python -m py_compile handler.py h3_extender_poc.py tests/test_h3_extender_poc.py
+      - name: Validate RunPod API workflow and Docker isolation (no GPU)
+        run: python -m unittest discover -s tests -p 'test_h3_extender_poc.py' -v
