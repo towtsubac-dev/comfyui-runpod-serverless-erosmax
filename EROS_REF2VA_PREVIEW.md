@@ -18,22 +18,40 @@ Production I2V / T2V / Extend / LoRA remain untouched.
 
 No Ref2VA beta2 model, no MiniMax Ref2VA W6A8, and no extra Turbo LoRA.
 
-## Build (isolated)
+## Build directly on RunPod (preferred)
 
-- GitHub: `towtsubac-dev/comfyui-runpod-serverless-erosmax`
+Use **RunPod Serverless → New Endpoint → Import Git Repository**. The endpoint
+must be created using the **GitHub repository source**, not a pre-built GHCR
+container image, to use RunPod's own builder.
+
+- Repo: `towtsubac-dev/comfyui-runpod-serverless-erosmax`
 - Branch: `feature/erosmax-beta6-ref2va-preview`
-- Dockerfile: `Dockerfile.ref2va-beta6`
-- Model base: same immutable GHCR model-bundled digest as
-  `Dockerfile.extender-lora-fast`, overlaid with one new Python module and
-  isolated action routing
-- GHCR isolated tag:
-  `ghcr.io/towtsubac-dev/comfyui-runpod-serverless-erosmax:beta6-ref2va-preview-20261112`
-- GitHub Actions build workflow:
-  `.github/workflows/build-eros-beta6-ref2va-preview.yml`
-- Use a **new Preview endpoint**, never replace the Production image.
-- GPU: 24GB (current AMPER_24/PRO 6000 class), min workers 0, max 1,
-  idle timeout 5s, queue delay 4s, no Network Volume, container disk 80GB,
-  timeout 900–1800s where supported.
+- Dockerfile Path: `Dockerfile.ref2va-beta6`
+- Build context: repository root
+- Endpoint name: `erosmax-beta6-ref2va-runpod-test`
+- Serverless mode: Queue
+- GPU: 24 GB compatible
+- Active/min workers: 0; max workers: 1; idle timeout: 5 seconds
+- Queue delay: 4 seconds
+- Container disk: 80 GB; Network Volume: None
+- Timeout: 900–1800 seconds where available
+
+**Do not select the GHCR image option or production branch.** RunPod
+builds the specified Dockerfile and deploys its own managed container
+image into this new test endpoint. The immutable GHCR digest in the
+Dockerfile is a **public model-bundled base image**, not an output
+target. As a result, no additional diffusion model download or model
+replacement occurs during this preview build.
+
+The optional `.github/workflows/build-eros-beta6-ref2va-preview.yml`
+GHCR job is manually triggered only. It should not be run for this
+workflow. An initial unintended GitHub Actions build may remain in
+GitHub's history; it is separate from RunPod Builds.
+
+Check the **Builds** tab of the new RunPod endpoint until it shows
+Completed and the worker passes its initialization health check.
+No GPU is needed merely to build the image.
+
 
 ## First diagnostic request
 
