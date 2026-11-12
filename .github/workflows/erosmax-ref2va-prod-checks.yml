@@ -1,0 +1,31 @@
+name: ErosMax Ref2VA Production Integration Checks
+on:
+  push:
+    branches:
+      - release/erosmax-ref2va-prod-v1
+    paths:
+      - handler.py
+      - eros_ref2va.py
+      - Dockerfile.extender-lora-fast
+      - tests/test_eros_ref2va.py
+      - tests/test_eros_integration_contract.py
+      - .github/workflows/erosmax-ref2va-prod-checks.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install regression dependencies
+        run: python -m pip install --disable-pip-version-check pillow requests
+      - name: Check Python syntax
+        run: python -m py_compile handler.py eros_ref2va.py tests/test_eros_ref2va.py tests/test_eros_integration_contract.py
+      - name: Test native Ref2VA graph, LoRA and existing production modes
+        run: python -m unittest discover -s tests -p 'test_eros*.py' -v
