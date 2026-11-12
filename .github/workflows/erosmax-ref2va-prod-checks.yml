@@ -28,4 +28,6 @@ jobs:
       - name: Check Python syntax
         run: python -m py_compile handler.py eros_ref2va.py tests/test_eros_ref2va.py tests/test_eros_integration_contract.py
       - name: Test native Ref2VA graph, LoRA and existing production modes
-        run: python -m unittest discover -s tests -p 'test_eros*.py' -v
+        run: |
+          python -m unittest discover -s tests -p 'test_eros_ref2va.py' -v
+          python -m unittest discover -s tests -p 'test_eros_integration_contract.py' -v
