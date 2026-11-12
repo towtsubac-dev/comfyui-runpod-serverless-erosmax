@@ -89,7 +89,7 @@ def _read_image(item):
 
 def build_ref2va_workflow(filenames, *, prompt, model, clip, video_vae, audio_vae,
                           width=864, height=480, length=124, steps=8,
-                          seed=123456, ref_image_size="match"):
+                          seed=123456, ref_image_size="match", optional_loras=None):
     if not isinstance(filenames, list) or not 2 <= len(filenames) <= MAX_IMAGES:
         raise ValueError("Ref2VA preview accepts 2–3 reference images")
     if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 12000:
@@ -133,6 +133,27 @@ def build_ref2va_workflow(filenames, *, prompt, model, clip, video_vae, audio_va
         node_id = str(20 + idx)
         workflow[node_id] = {"class_type": "LoadImage", "inputs": {"image": filename}}
         refs["ref_images.ref_image_" + str(idx)] = [node_id, 0]
+    # Model-only LoRAs use the existing ErosMax library. Keep their order
+    # exactly as selected in Studio; the native Ref2VA base model stays beta6.
+    selected = optional_loras or []
+    if len(selected) > 5:
+        raise ValueError("At most 5 optional LoRAs are supported")
+    model_ref = ["2", 0]
+    for index, item in enumerate(selected):
+        strength = float(item["strength"])
+        if not 0.0 <= strength <= 2.0:
+            raise ValueError("ErosMax Ref2VA LoRA strength must be 0–2")
+        node_id = str(30 + index)
+        workflow[node_id] = {
+            "class_type": "LoraLoaderModelOnly",
+            "inputs": {
+                "model": model_ref,
+                "lora_name": item["filename"],
+                "strength_model": strength,
+            },
+        }
+        model_ref = [node_id, 0]
+    workflow["8"]["inputs"]["model"] = model_ref
     return workflow
 
 
@@ -164,12 +185,10 @@ def check(*, comfyui_dir, comfyui_url, model, clip, video_vae, audio_vae):
 
 def generate(job_input, *, comfyui_dir, model, clip, video_vae, audio_vae,
              ensure_comfyui, upload_image, queue_prompt, wait_for_result,
-             extract_outputs, download_output):
+             extract_outputs, download_output, resolve_loras=None):
     refs = job_input.get("reference_images")
     if not isinstance(refs, list) or not 2 <= len(refs) <= MAX_IMAGES:
         raise ValueError("reference_images must contain 2–3 images")
-    if job_input.get("loras") or job_input.get("lora"):
-        raise ValueError("Additional LoRAs are disabled for the initial Ref2VA test")
     prompt = job_input.get("prompt")
     width = int(job_input.get("width", 864))
     height = int(job_input.get("height", 480))
@@ -178,6 +197,13 @@ def generate(job_input, *, comfyui_dir, model, clip, video_vae, audio_vae,
     seed_raw = job_input.get("seed")
     seed = int.from_bytes(os.urandom(8), "big") % 1000000000 if seed_raw is None else int(seed_raw)
     ref_size = job_input.get("ref_image_size", "match")
+    optional_loras = []
+    if job_input.get("loras") or job_input.get("lora"):
+        if resolve_loras is None:
+            raise ValueError("LoRA resolver is not available")
+        optional_loras = resolve_loras(job_input)
+        if len(optional_loras) > 5:
+            raise ValueError("At most 5 optional LoRAs are supported")
     # Validate parameters before paying to load the model or uploading inputs.
     build_ref2va_workflow(["placeholder-a.png", "placeholder-b.png"],
                           prompt=prompt, model=model, clip=clip,
@@ -194,7 +220,8 @@ def generate(job_input, *, comfyui_dir, model, clip, video_vae, audio_vae,
         workflow = build_ref2va_workflow(uploaded, prompt=prompt, model=model, clip=clip,
                                          video_vae=video_vae, audio_vae=audio_vae,
                                          width=width, height=height, length=length,
-                                         steps=steps, seed=seed, ref_image_size=ref_size)
+                                         steps=steps, seed=seed, ref_image_size=ref_size,
+                                         optional_loras=optional_loras)
         print("[Eros Ref2VA] model=" + model + " refs=" + str(len(uploaded))
               + " steps=" + str(steps) + " size=" + ref_size + " seed=" + str(seed), flush=True)
         prompt_id = queue_prompt(workflow)
@@ -208,7 +235,7 @@ def generate(job_input, *, comfyui_dir, model, clip, video_vae, audio_vae,
             raise RuntimeError("Eros Ref2VA completed without an MP4")
         return {"status": "ok", "mode": "ref2va", "prompt_id": prompt_id,
                 "model": model, "reference_image_count": len(uploaded),
-                "steps": steps, "seed": seed, "outputs": outputs}
+                "steps": steps, "seed": seed, "lora_count": len(optional_loras), "outputs": outputs}
     finally:
         root = os.path.join(comfyui_dir, "input")
         for filename in uploaded:
