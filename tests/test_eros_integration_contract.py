@@ -27,11 +27,11 @@ class ErosProductionCompatibilityTests(unittest.TestCase):
         )
         for action in expected:
             with self.subTest(action=action):
-                self.assertIn(repr(action), source)
+                self.assertTrue(('"' + action + '"' in source) or ("'" + action + "'" in source))
 
     def test_ref2va_routes_are_separate_and_model_is_unchanged(self):
         for action in ("eros_ref2va_check", "eros_ref2va_generate"):
-            self.assertIn(repr(action), self.handler_src)
+            self.assertTrue(('"' + action + '"' in self.handler_src) or ("'" + action + "'" in self.handler_src))
         self.assertIn("resolve_loras=optional_lora", self.handler_src)
         self.assertIn("MiniMaxH3ReferenceToVideo", self.workflow_src)
         self.assertIn("10Eros_Max_h3_8stepTURBO_beta6_pruned_w4a8.safetensors",
