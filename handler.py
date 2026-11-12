@@ -1459,6 +1459,34 @@ def handler(job):
         if action == "health":
             ensure_comfyui()
             return {"status": "ok", "message": "ComfyUI is running", "eros_extend_revision": "v13-isolated-flash-preview", "system_stats": requests.get(f"{COMFYUI_URL}/system_stats", timeout=30).json()}
+        if action == "eros_ref2va_check":
+            from eros_ref2va import check
+            ensure_comfyui()
+            return check(
+                comfyui_dir=COMFYUI_DIR,
+                comfyui_url=COMFYUI_URL,
+                model=DIFFUSION_MODEL,
+                clip=TEXT_ENCODER,
+                video_vae=VIDEO_VAE,
+                audio_vae=AUDIO_VAE,
+            )
+        if action == "eros_ref2va_generate":
+            from eros_ref2va import generate
+            return generate(
+                job_input,
+                comfyui_dir=COMFYUI_DIR,
+                model=DIFFUSION_MODEL,
+                clip=TEXT_ENCODER,
+                video_vae=VIDEO_VAE,
+                audio_vae=AUDIO_VAE,
+                ensure_comfyui=ensure_comfyui,
+                upload_image=upload_image,
+                queue_prompt=queue_prompt,
+                wait_for_result=wait_for_result,
+                extract_outputs=extract_outputs,
+                download_output=download_output,
+                resolve_loras=optional_lora,
+            )
         if action == "h3_check":
             return h3_check()
         if action == "h3_extend_generate":
