@@ -107,9 +107,59 @@ class Ref2vaGraphTests(unittest.TestCase):
         self.assertEqual(queued[0]["13"]["inputs"]["noise_seed"], 777)
         self.assertEqual(result["outputs"][0]["data"], "dGVzdC1tcDQ=")
 
-    def test_extra_loras_rejected(self):
-        with self.assertRaisesRegex(ValueError, "LoRAs"):
-            generate({"reference_images": [{}, {}], "prompt": "test", "loras": [{"name": "x"}]},
+    def test_ordered_library_loras_on_original_beta6_model(self):
+        refs = [{"filename": f"library_{i}.safetensors", "strength": strength}
+                for i, strength in enumerate([0.8, 0.3, 1.2, 0.5, 0.75])]
+        wf = workflow(["one.png", "two.png"], optional_loras=refs)
+        self.assertEqual(wf["2"]["inputs"]["unet_name"], WEIGHTS["model"])
+        self.assertEqual(wf["30"]["inputs"]["model"], ["2", 0])
+        self.assertEqual(wf["34"]["inputs"]["model"], ["33", 0])
+        self.assertEqual(wf["8"]["inputs"]["model"], ["34", 0])
+        self.assertEqual(wf["31"]["inputs"]["strength_model"], 0.3)
+        self.assertEqual(wf["34"]["inputs"]["lora_name"], "library_4.safetensors")
+        self.assertEqual(len([v for v in wf.values() if v["class_type"] == "LoraLoaderModelOnly"]), 5)
+
+    def test_lora_strength_and_count_are_bounded(self):
+        with self.assertRaisesRegex(ValueError, "5"):
+            workflow(["one.png", "two.png"], optional_loras=[
+                {"filename": str(i), "strength": 1} for i in range(6)])
+        with self.assertRaisesRegex(ValueError, "strength"):
+            workflow(["one.png", "two.png"], optional_loras=[
+                {"filename": "bad", "strength": 2.5}])
+
+    def test_generate_resolves_loras_and_applies_to_beta6(self):
+        img = Image.new("RGB", (256, 256), "red")
+        buffer = io.BytesIO()
+        img.save(buffer, "PNG")
+        data = base64.b64encode(buffer.getvalue()).decode("ascii")
+        queued = []
+        selected = []
+        with tempfile.TemporaryDirectory() as tmp:
+            output = generate({
+                "reference_images": [{"image": data}, {"image": data}],
+                "prompt": "Test <Picture 1> and <Picture 2>",
+                "loras": [{"name": "library:good", "strength": 0.8}],
+                "seed": 999,
+            }, comfyui_dir=tmp, **WEIGHTS,
+                ensure_comfyui=lambda: None,
+                upload_image=lambda raw, name: name,
+                queue_prompt=lambda wf: queued.append(wf) or "p1",
+                wait_for_result=lambda id, timeout: {"outputs": {}},
+                extract_outputs=lambda history: [{"filename": "ok.mp4", "type": "videos"}],
+                download_output=lambda item: "dGVzdA==",
+                resolve_loras=lambda inp: selected.append(inp["loras"]) or [
+                    {"filename": "library_good.safetensors", "strength": 0.8}
+                ],
+            )
+        self.assertEqual(output["lora_count"], 1)
+        self.assertEqual(queued[0]["30"]["inputs"]["model"], ["2", 0])
+        self.assertEqual(queued[0]["8"]["inputs"]["model"], ["30", 0])
+        self.assertEqual(len(selected), 1)
+
+    def test_loras_requires_a_trusted_resolver(self):
+        with self.assertRaisesRegex(ValueError, "resolver"):
+            generate({"reference_images": [{}, {}], "prompt": "test",
+                      "loras": [{"name": "foo"}]},
                      comfyui_dir="/tmp", **WEIGHTS, ensure_comfyui=None, upload_image=None,
                      queue_prompt=None, wait_for_result=None, extract_outputs=None, download_output=None)
 
