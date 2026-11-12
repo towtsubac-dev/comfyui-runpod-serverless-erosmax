@@ -1485,6 +1485,7 @@ def handler(job):
                 wait_for_result=wait_for_result,
                 extract_outputs=extract_outputs,
                 download_output=download_output,
+                resolve_loras=optional_lora,
             )
         if action == "h3_check":
             return h3_check()
