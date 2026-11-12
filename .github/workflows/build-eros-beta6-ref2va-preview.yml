@@ -1,17 +1,7 @@
 name: Build ErosMax beta6 Ref2VA Preview (isolated tag)
 
+# Manual fallback only. The preferred path is RunPod GitHub direct build.
 on:
-  push:
-    branches:
-      - feature/erosmax-beta6-ref2va-preview
-    paths:
-      - Dockerfile.ref2va-beta6
-      - eros_ref2va.py
-      - handler.py
-      - h3_extender_poc.py
-      - registered_lora.py
-      - extender_r2_io.py
-      - .github/workflows/build-eros-beta6-ref2va-preview.yml
   workflow_dispatch:
 
 permissions:
