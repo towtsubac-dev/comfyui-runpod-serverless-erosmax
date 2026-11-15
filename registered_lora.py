@@ -1,4 +1,4 @@
-"""Download a registered R2 LoRA using a short-lived signed URL.
+"""Download a registered R2 or Hugging Face LoRA using a short-lived signed URL.
 
 This module does not change the existing bundled Civitai LoRAs.
 Only call it with a trusted descriptor created by the Vercel backend.
@@ -11,6 +11,7 @@ import tempfile
 from urllib.parse import urlparse
 
 import requests
+from lora_url_policy import lora_source, open_signed_lora
 
 MAX_BYTES = 2 * 1024 ** 3
 ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -32,11 +33,7 @@ def download_registered_lora(descriptor, directory="/workspace/ComfyUI/models/lo
         raise ValueError("Invalid registered LoRA size")
     if not isinstance(url, str) or len(url) > 4096:
         raise ValueError("Invalid LoRA download URL")
-    parsed = urlparse(url)
-    if parsed.scheme != "https" or not parsed.hostname or not parsed.hostname.endswith(".r2.cloudflarestorage.com"):
-        raise ValueError("Unexpected LoRA download host")
-    if parsed.username or parsed.password or parsed.fragment:
-        raise ValueError("Invalid LoRA URL")
+    provider = lora_source(url, identifier)
     os.makedirs(directory, exist_ok=True)
     filename = f"library_{identifier}_{sha256[:16]}.safetensors"
     target = os.path.join(directory, filename)
@@ -50,8 +47,7 @@ def download_registered_lora(descriptor, directory="/workspace/ComfyUI/models/lo
         hasher = hashlib.sha256()
         received = 0
         with os.fdopen(fd, "wb") as output:
-            with requests.get(url, stream=True, timeout=(30, 120), allow_redirects=False) as response:
-                response.raise_for_status()
+            with open_signed_lora(url, provider, timeout=(30, 120)) as response:
                 for chunk in response.iter_content(chunk_size=1024 * 1024):
                     if not chunk:
                         continue
