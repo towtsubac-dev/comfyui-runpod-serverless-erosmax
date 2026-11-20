@@ -150,7 +150,9 @@ class ExtenderPocTests(unittest.TestCase):
         lib = (ROOT / "registered_lora.py").read_text(encoding="utf-8")
         self.assertIn("sha256", lib)
         self.assertIn("safetensors", lib)
-        self.assertIn("allow_redirects=False", lib)
+        self.assertIn("open_signed_lora(url, provider", lib)
+        policy = (ROOT / "lora_url_policy.py").read_text(encoding="utf-8")
+        self.assertIn("allow_redirects=False", policy)
 
     def test_backend_aligns_unusual_portrait_sources_and_restores_output(self):
         source = (ROOT / "handler.py").read_text(encoding="utf-8")
