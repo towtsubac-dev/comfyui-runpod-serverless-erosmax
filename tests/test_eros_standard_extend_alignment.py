@@ -137,6 +137,22 @@ class ErosExtensionAlignmentTest(unittest.TestCase):
         self.assertIn("_concat_extended_video(input_path, segment_path, combined)",SOURCE)
         self.assertNotIn('f"ComfyUI job failed: {record}"',SOURCE)
 
+    def test_standard_extension_r2_direct_and_oversize_guard(self):
+        # The standard extender must not return a giant base64 payload that
+        # RunPod silently drops with job-done HTTP 400.
+        func=next(n for n in TREE.body
+                  if isinstance(n,ast.FunctionDef) and n.name=="h3_extend_generate")
+        code=ast.get_source_segment(SOURCE,func)
+        self.assertIn('job_input.get("output_upload")',code)
+        self.assertIn("upload_r2_output(combined, output_upload)",code)
+        self.assertIn('"r2_upload": receipt, "outputs": []',code)
+        self.assertIn("os.path.getsize(combined) > MAX_RUNPOD_INLINE_MP4_BYTES",code)
+        self.assertIn("MAX_RUNPOD_INLINE_MP4_BYTES = 14_000_000",code)
+        self.assertLess(
+            code.index("os.path.getsize(combined) > MAX_RUNPOD_INLINE_MP4_BYTES"),
+            code.index('base64.b64encode(file.read()).decode("ascii")'),
+        )
+
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"),"FFmpeg unavailable")
     def test_real_ffmpeg_edge_colors_audio_and_onepass_output(self):
         env=self.helpers
