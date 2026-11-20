@@ -1528,13 +1528,40 @@ def h3_extend_generate(job_input):
                     + str(receipt["bytes"]),
                     flush=True,
                 )
-                return {
+                result = {
                     "status": "ok", "mode": "extend",
                     "prompt_id": prompt_id,
                     "flash_repair_requested": flash_requested,
                     "flash_repair_applied": segment_path != raw_segment_path,
                     "r2_upload": receipt, "outputs": [],
                 }
+                # The optional flash A/B comparison needs its own signed
+                # one-object R2 upload; never send a second base64 MP4.
+                if (job_input.get("extension_compare_flash") is True
+                        and flash_requested and segment_path != raw_segment_path):
+                    comparison_upload = job_input.get("comparison_output_upload")
+                    if comparison_upload is not None:
+                        try:
+                            raw_combined = os.path.join(temp_dir, "extended_no_flash.mp4")
+                            _concat_extended_video(
+                                input_path, raw_segment_path, raw_combined
+                            )
+                            result["comparison_r2_upload"] = upload_r2_output(
+                                raw_combined, comparison_upload
+                            )
+                            print(
+                                "[EROS EXTEND R2] flash comparison uploaded bytes="
+                                + str(result["comparison_r2_upload"]["bytes"]),
+                                flush=True,
+                            )
+                        except Exception as exc:
+                            # The corrected primary video has already been
+                            # uploaded; optional comparison must not lose it.
+                            print(
+                                "[EROS EXTEND R2] flash comparison unavailable: "
+                                + str(exc), flush=True
+                            )
+                return result
             # RunPod's job-done API rejects oversized JSON even after the
             # GPU job succeeds. Fail explicitly BEFORE base64 encoding so a
             # completed job never silently loses its MP4.
