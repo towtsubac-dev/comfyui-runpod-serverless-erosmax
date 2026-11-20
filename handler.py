@@ -1516,6 +1516,35 @@ def h3_extend_generate(job_input):
                     _concat_extended_video(input_path, fallback_segment, combined)
             else:
                 _concat_extended_video(input_path, segment_path, combined)
+            # Standard ErosMax extension can return a small authenticated R2
+            # receipt instead of a large base64 MP4. Reuse the proven H3
+            # Extender staging transport; original output quality is unchanged.
+            output_upload = job_input.get("output_upload")
+            if output_upload is not None:
+                from extender_r2_io import upload_r2_output
+                receipt = upload_r2_output(combined, output_upload)
+                print(
+                    "[EROS EXTEND R2] uploaded video bytes="
+                    + str(receipt["bytes"]),
+                    flush=True,
+                )
+                return {
+                    "status": "ok", "mode": "extend",
+                    "prompt_id": prompt_id,
+                    "flash_repair_requested": flash_requested,
+                    "flash_repair_applied": segment_path != raw_segment_path,
+                    "r2_upload": receipt, "outputs": [],
+                }
+            # RunPod's job-done API rejects oversized JSON even after the
+            # GPU job succeeds. Fail explicitly BEFORE base64 encoding so a
+            # completed job never silently loses its MP4.
+            MAX_RUNPOD_INLINE_RESULT_BYTES = 19_500_000
+            MAX_RUNPOD_INLINE_MP4_BYTES = 14_000_000
+            if os.path.getsize(combined) > MAX_RUNPOD_INLINE_MP4_BYTES:
+                raise RuntimeError(
+                    "ErosMax output exceeds 14 MB inline limit; "
+                    "enable R2 direct output for full-quality video."
+                )
             with open(combined, "rb") as file:
                 result_b64 = base64.b64encode(file.read()).decode("ascii")
             returned_outputs = [{
@@ -1526,7 +1555,6 @@ def h3_extend_generate(job_input):
             # Optional A/B comparison of the same inferred segment: no extra
             # GPU inference. Keep the primary video if the second file is too
             # large for RunPod's inline job result.
-            MAX_RUNPOD_INLINE_RESULT_BYTES = 19_500_000
             if (job_input.get("extension_compare_flash", False) is True
                     and flash_requested and segment_path != raw_segment_path):
                 try:
