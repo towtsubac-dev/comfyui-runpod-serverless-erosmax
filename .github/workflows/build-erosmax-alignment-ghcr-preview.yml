@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - ci/erosmax-alignment-ghcr-preview-20261120
+      - ci/erosmax-extender-32px-fix-20261120
     paths:
       - .github/workflows/build-erosmax-alignment-ghcr-preview.yml
       - Dockerfile.eros-extend-alignment-preview
@@ -43,6 +44,7 @@ jobs:
       - name: Run all 32px alignment and FFmpeg contract tests
         run: |
           python -m unittest discover -s tests -p 'test_eros_standard_extend_alignment.py' -v
+          python -m unittest discover -s tests -p 'test_h3_extender_poc.py' -v
 
   publish-preview:
     needs: offline-tests
