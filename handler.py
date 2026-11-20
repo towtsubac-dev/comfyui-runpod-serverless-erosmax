@@ -133,7 +133,17 @@ def wait_for_result(prompt_id, timeout=DEFAULT_TIMEOUT):
             if status == "success":
                 return record
             if status in {"error", "failed", "canceled"}:
-                raise RuntimeError(f"ComfyUI job failed: {record}")
+                # Never log the complete ComfyUI record: it contains prompt
+                # text, input tensors, and potentially private source data.
+                details = [
+                    item[1] for item in record.get("status", {}).get("messages", [])
+                    if isinstance(item, (list, tuple)) and len(item) == 2
+                    and item[0] == "execution_error" and isinstance(item[1], dict)
+                ]
+                issue = details[-1] if details else {}
+                reason = str(issue.get("exception_message") or status)[:700]
+                node = str(issue.get("node_type") or "unknown")[:100]
+                raise RuntimeError(f"ComfyUI job failed at {node}: {reason}")
         time.sleep(2)
     raise TimeoutError(f"ComfyUI job timed out after {timeout} seconds.")
 
@@ -630,6 +640,53 @@ def _concat_extended_video(original_path, segment_path, output_path):
         except OSError:
             pass
 
+
+
+def _h3_extend_aligned_size(width, height):
+    """MiniMax H3 uses a 16x VAE and 2x2 latent patches: each axis needs 32 pixels."""
+    return ((width + 31) // 32 * 32, (height + 31) // 32 * 32)
+
+
+def _pad_h3_extend_source(source, destination, width, height):
+    """Losslessly preserve the displayed geometry by padding, never scaling/cropping."""
+    aligned_width, aligned_height = _h3_extend_aligned_size(width, height)
+    pad_x = (aligned_width - width) // 2
+    pad_y = (aligned_height - height) // 2
+    video_filter = (
+        f"pad={aligned_width}:{aligned_height}:{pad_x}:{pad_y}:black,"
+        "setsar=1,format=yuv420p"
+    )
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-i", source,
+         "-map", "0:v:0", "-map", "0:a:0?", "-vf", video_filter,
+         "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
+         "-movflags", "+faststart", destination],
+        check=True, capture_output=True, text=True, timeout=300,
+    )
+    print(
+        f"[EROS EXTEND ALIGN] source={width}x{height} "
+        f"model={aligned_width}x{aligned_height} pad={pad_x},{pad_y}",
+        flush=True,
+    )
+    return pad_x, pad_y
+
+
+def _crop_h3_extend_segment(source, destination, width, height, pad_x, pad_y):
+    """Remove only the temporary padding; keep the original output dimensions."""
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-i", source,
+         "-map", "0:v:0", "-map", "0:a:0?",
+         "-vf", f"crop={width}:{height}:{pad_x}:{pad_y},setsar=1,format=yuv420p",
+         "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+         "-pix_fmt", "yuv420p", "-c:a", "copy", "-movflags", "+faststart",
+         destination],
+        check=True, capture_output=True, text=True, timeout=300,
+    )
+    restored = _probe_video(destination)
+    if (restored["width"], restored["height"]) != (width, height):
+        raise RuntimeError("ErosMax extension restored segment with unexpected dimensions.")
+    print(f"[EROS EXTEND ALIGN] restored generated segment to {width}x{height}", flush=True)
 
 
 # ErosMax Preview-only extension flash repair, ported from MiniMax H3 v11.
@@ -1207,10 +1264,26 @@ def h3_extend_generate(job_input):
                 raise ValueError("Input video duration must be 0-120 seconds.")
             if info["width"] % 16 or info["height"] % 16:
                 raise ValueError("Input video dimensions must be divisible by 16.")
-            frame_cap = min(81, max(2, info["frames"]))
-            skip = max(0, info["frames"] - frame_cap)
+            # Keep the uploaded MP4 untouched. Only the temporary ComfyUI input
+            # needs 32-pixel alignment so 2x2 VAE latent patchification succeeds.
+            model_filename = filename
+            model_info = info
+            pad = None
+            if info["width"] % 32 or info["height"] % 32:
+                aligned_filename = f"eros_extend_align_{job_id}.mp4"
+                aligned_path = os.path.join(COMFYUI_DIR, "input", aligned_filename)
+                pad = _pad_h3_extend_source(
+                    input_path, aligned_path, info["width"], info["height"]
+                )
+                model_filename = aligned_filename
+                model_info = _probe_video(aligned_path)
+                expected = _h3_extend_aligned_size(info["width"], info["height"])
+                if (model_info["width"], model_info["height"]) != expected:
+                    raise RuntimeError("Temporary ErosMax aligned video has unexpected dimensions.")
+            frame_cap = min(81, max(2, model_info["frames"]))
+            skip = max(0, model_info["frames"] - frame_cap)
             seed = int(job_input.get("seed", int.from_bytes(os.urandom(8), "big") % 10_000_000_000))
-            workflow = build_h3_extend_workflow(filename, prompt, {3: 76, 5: 124, 8: 196, 10: 244}[seconds], skip, frame_cap, steps=8, seed=seed, optional_loras=optional_lora(job_input))
+            workflow = build_h3_extend_workflow(model_filename, prompt, {3: 76, 5: 124, 8: 196, 10: 244}[seconds], skip, frame_cap, steps=8, seed=seed, optional_loras=optional_lora(job_input))
             prompt_id = queue_prompt(workflow)
             record = wait_for_result(prompt_id)
             outputs = [item for item in extract_outputs(record) if item["filename"].lower().endswith(".mp4")]
@@ -1250,6 +1323,13 @@ def h3_extend_generate(job_input):
             segment_path = os.path.join(temp_dir, "segment.mp4")
             with open(segment_path, "wb") as file:
                 file.write(base64.b64decode(segment_b64))
+            if pad is not None:
+                cropped_segment = os.path.join(temp_dir, "segment_original_dimensions.mp4")
+                _crop_h3_extend_segment(
+                    segment_path, cropped_segment,
+                    info["width"], info["height"], *pad,
+                )
+                segment_path = cropped_segment
             raw_segment_path = segment_path
             flash_requested = job_input.get("extension_flash_repair", False) is True
             if flash_requested:
@@ -1306,6 +1386,9 @@ def h3_extend_generate(job_input):
         finally:
             if os.path.isfile(input_path):
                 os.remove(input_path)
+            aligned_path = os.path.join(COMFYUI_DIR, "input", f"eros_extend_align_{job_id}.mp4")
+            if os.path.isfile(aligned_path):
+                os.remove(aligned_path)
 
 
 
