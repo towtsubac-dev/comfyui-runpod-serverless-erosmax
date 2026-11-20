@@ -1,0 +1,30 @@
+name: ErosMax Extender Synthetic Portrait Fixture (test only)
+
+on:
+  push:
+    branches:
+      - ci/erosmax-extender-32px-fix-20261120
+    paths:
+      - .github/workflows/erosmax-extender-portrait-fixture.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fixture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Create small source video for GPU regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v ffmpeg || (sudo apt-get update -qq && sudo apt-get install -y ffmpeg)
+          ffmpeg -hide_banner -loglevel error -y \
+            -f lavfi -i 'color=c=0x4455aa:s=720x1280:r=24:d=1' \
+            -vf 'drawbox=x=120:y=200:w=460:h=650:color=0xdeb887:t=fill,drawbox=x=250:y=390:w=200:h=150:color=0x003377:t=fill' \
+            -t 1 -c:v libx264 -preset ultrafast -crf 40 -pix_fmt yuv420p -an /tmp/portrait.mp4
+          ffprobe -v error -show_entries stream=width,height,codec_type:format=duration -of json /tmp/portrait.mp4
+          test "$(stat -c%s /tmp/portrait.mp4)" -lt 50000
+          printf 'SYNTHETIC_PORTRAIT_MP4_B64=%s\n' "$(base64 -w0 /tmp/portrait.mp4)"
