@@ -691,6 +691,23 @@ def _h3_extend_geometry(width, height):
     }
 
 
+def _add_silent_audio_to_h3_extend_source(source, destination, duration):
+    """Mux a silent AAC track onto video-only input without re-encoding video."""
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-v", "error", "-i", source,
+            "-f", "lavfi", "-i",
+            "anullsrc=channel_layout=stereo:sample_rate=32000",
+            "-map", "0:v:0", "-map", "1:a:0",
+            "-c:v", "copy", "-c:a", "aac", "-b:a", "64k",
+            "-t", f"{float(duration):.6f}",
+            "-movflags", "+faststart", destination,
+        ],
+        check=True, capture_output=True, text=True, timeout=300,
+    )
+    print("[EROS EXTEND ALIGN] added silent audio to video-only input", flush=True)
+
+
 def _pad_h3_extend_source(source, destination, width, height):
     """Edge-smear rather than black padding; avoid recoding the input audio."""
     plan = _h3_extend_geometry(width, height)
@@ -1384,12 +1401,28 @@ def h3_extend_generate(job_input):
             model_filename = filename
             model_info = info
             plan = None
+            # VHS_LoadVideo expects an audio stream even when the source MP4 is
+            # legitimately video-only. Add a silent AAC track by stream-copying
+            # the video. The original input is left untouched for final concat.
+            audio_filename = f"eros_extend_audio_{job_id}.mp4"
+            audio_path = os.path.join(COMFYUI_DIR, "input", audio_filename)
+            if not info["has_audio"]:
+                _add_silent_audio_to_h3_extend_source(
+                    input_path, audio_path, info["duration"]
+                )
+                model_filename = audio_filename
+                model_info = _probe_video(audio_path)
+                if not model_info["has_audio"]:
+                    raise RuntimeError("Silent-audio mux did not add an audio stream.")
             expected = _h3_extend_aligned_size(info["width"], info["height"])
             if expected != (info["width"], info["height"]):
                 aligned_filename = f"eros_extend_align_{job_id}.mp4"
                 aligned_path = os.path.join(COMFYUI_DIR, "input", aligned_filename)
+                model_input_path = os.path.join(
+                    COMFYUI_DIR, "input", model_filename
+                )
                 plan = _pad_h3_extend_source(
-                    input_path, aligned_path, info["width"], info["height"]
+                    model_input_path, aligned_path, info["width"], info["height"]
                 )
                 model_filename = aligned_filename
                 model_info = _probe_video(aligned_path)
@@ -1525,6 +1558,9 @@ def h3_extend_generate(job_input):
             aligned_path = os.path.join(COMFYUI_DIR, "input", f"eros_extend_align_{job_id}.mp4")
             if os.path.isfile(aligned_path):
                 os.remove(aligned_path)
+            audio_path = os.path.join(COMFYUI_DIR, "input", f"eros_extend_audio_{job_id}.mp4")
+            if os.path.isfile(audio_path):
+                os.remove(audio_path)
 
 
 
