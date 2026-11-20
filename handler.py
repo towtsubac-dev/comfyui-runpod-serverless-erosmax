@@ -642,43 +642,94 @@ def _concat_extended_video(original_path, segment_path, output_path):
 
 
 
+# Keep within the known 24GB model envelope. Larger clips are resized only
+# for inference; the source and final MP4 retain their original dimensions.
+H3_EXTEND_MAX_PIXELS = 1024 * 1024
+H3_EXTEND_MAX_AXIS = 1536
+
+
 def _h3_extend_aligned_size(width, height):
-    """MiniMax H3 uses a 16x VAE and 2x2 latent patches: each axis needs 32 pixels."""
-    return ((width + 31) // 32 * 32, (height + 31) // 32 * 32)
+    """Pick a 32-aligned inference canvas without upscaling or exceeding 24GB limits."""
+    import math
+    width, height = int(width), int(height)
+    if width < 2 or height < 2 or width % 2 or height % 2:
+        raise ValueError("ErosMax extension requires even source dimensions of at least 2px.")
+    ratio = min(
+        1.0,
+        H3_EXTEND_MAX_AXIS / max(width, height),
+        math.sqrt(H3_EXTEND_MAX_PIXELS / (width * height)),
+    )
+    target_w = max(32, math.ceil((width * ratio) / 32) * 32)
+    target_h = max(32, math.ceil((height * ratio) / 32) * 32)
+    while target_w * target_h > H3_EXTEND_MAX_PIXELS:
+        if target_w > 32 and (
+            target_h <= 32 or target_w / width >= target_h / height
+        ):
+            target_w -= 32
+        elif target_h > 32:
+            target_h -= 32
+        else:
+            raise ValueError("ErosMax cannot fit source aspect ratio within inference limits.")
+    return target_w, target_h
+
+
+def _h3_extend_geometry(width, height):
+    """Canvas, exact proportional content, and symmetric smear border widths."""
+    import math
+    target_w, target_h = _h3_extend_aligned_size(width, height)
+    ratio = min(1.0, target_w / width, target_h / height)
+    inner_w = max(2, min(target_w, int(math.floor(width * ratio / 2)) * 2))
+    inner_h = max(2, min(target_h, int(math.floor(height * ratio / 2)) * 2))
+    left = (target_w - inner_w) // 2
+    top = (target_h - inner_h) // 2
+    return {
+        "width": target_w, "height": target_h,
+        "inner_width": inner_w, "inner_height": inner_h,
+        "left": left, "right": target_w - inner_w - left,
+        "top": top, "bottom": target_h - inner_h - top,
+        "downscaled": inner_w != width or inner_h != height,
+    }
 
 
 def _pad_h3_extend_source(source, destination, width, height):
-    """Losslessly preserve the displayed geometry by padding, never scaling/cropping."""
-    aligned_width, aligned_height = _h3_extend_aligned_size(width, height)
-    pad_x = (aligned_width - width) // 2
-    pad_y = (aligned_height - height) // 2
+    """Edge-smear rather than black padding; avoid recoding the input audio."""
+    plan = _h3_extend_geometry(width, height)
     video_filter = (
-        f"pad={aligned_width}:{aligned_height}:{pad_x}:{pad_y}:black,"
+        f"scale={plan['inner_width']}:{plan['inner_height']}:flags=lanczos,"
+        f"pad={plan['width']}:{plan['height']}:{plan['left']}:{plan['top']}:black,"
+        f"fillborders=left={plan['left']}:right={plan['right']}:"
+        f"top={plan['top']}:bottom={plan['bottom']}:mode=smear,"
         "setsar=1,format=yuv420p"
     )
     subprocess.run(
         ["ffmpeg", "-y", "-v", "error", "-i", source,
          "-map", "0:v:0", "-map", "0:a:0?", "-vf", video_filter,
-         "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
-         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
+         "-c:v", "libx264", "-preset", "veryfast", "-crf", "14",
+         "-pix_fmt", "yuv420p", "-c:a", "copy",
          "-movflags", "+faststart", destination],
         check=True, capture_output=True, text=True, timeout=300,
     )
     print(
         f"[EROS EXTEND ALIGN] source={width}x{height} "
-        f"model={aligned_width}x{aligned_height} pad={pad_x},{pad_y}",
+        f"model={plan['width']}x{plan['height']} "
+        f"border={plan['left']},{plan['top']},{plan['right']},{plan['bottom']} "
+        f"downscaled={plan['downscaled']}",
         flush=True,
     )
-    return pad_x, pad_y
+    return plan
 
 
-def _crop_h3_extend_segment(source, destination, width, height, pad_x, pad_y):
-    """Remove only the temporary padding; keep the original output dimensions."""
+def _crop_h3_extend_segment(source, destination, width, height, plan):
+    """For optional flash repair only: restore the native canvas before repair."""
+    crop_filter = (
+        f"crop={plan['inner_width']}:{plan['inner_height']}:"
+        f"{plan['left']}:{plan['top']},"
+        f"scale={width}:{height}:flags=lanczos,setsar=1,format=yuv420p"
+    )
     subprocess.run(
         ["ffmpeg", "-y", "-v", "error", "-i", source,
-         "-map", "0:v:0", "-map", "0:a:0?",
-         "-vf", f"crop={width}:{height}:{pad_x}:{pad_y},setsar=1,format=yuv420p",
-         "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+         "-map", "0:v:0", "-map", "0:a:0?", "-vf", crop_filter,
+         "-c:v", "libx264", "-preset", "veryfast", "-crf", "14",
          "-pix_fmt", "yuv420p", "-c:a", "copy", "-movflags", "+faststart",
          destination],
         check=True, capture_output=True, text=True, timeout=300,
@@ -687,6 +738,70 @@ def _crop_h3_extend_segment(source, destination, width, height, pad_x, pad_y):
     if (restored["width"], restored["height"]) != (width, height):
         raise RuntimeError("ErosMax extension restored segment with unexpected dimensions.")
     print(f"[EROS EXTEND ALIGN] restored generated segment to {width}x{height}", flush=True)
+
+
+def _concat_extended_video_onepass(original_path, segment_path, output_path, plan=None):
+    """Single video encoding: source + segment, optional inline crop/rescale.
+
+    Audio is re-encoded only in this final output. A silent track is synthesized
+    for inputs without audio, preserving the normal ErosMax MP4 contract.
+    """
+    original_info = _probe_video(original_path)
+    segment_info = _probe_video(segment_path)
+    width, height = original_info["width"], original_info["height"]
+    if plan and (segment_info["width"], segment_info["height"]) != (
+        plan["width"], plan["height"]
+    ):
+        raise RuntimeError("Generated ErosMax segment has unexpected aligned dimensions.")
+    command = ["ffmpeg", "-y", "-v", "error", "-i", original_path, "-i", segment_path]
+    audio_inputs = []
+    for index, info in enumerate((original_info, segment_info)):
+        if info["has_audio"]:
+            audio_inputs.append(f"[{index}:a:0]")
+        else:
+            input_number = 2 + sum(not a["has_audio"] for a in (
+                original_info, segment_info
+            )[:index])
+            command += [
+                "-f", "lavfi", "-t", f"{info['duration']:.6f}",
+                "-i", "anullsrc=channel_layout=stereo:sample_rate=32000",
+            ]
+            audio_inputs.append(f"[{input_number}:a:0]")
+    crop = ""
+    if plan:
+        crop = (
+            f"crop={plan['inner_width']}:{plan['inner_height']}:"
+            f"{plan['left']}:{plan['top']},"
+        )
+    video_base = f"scale={width}:{height}:flags=lanczos,fps=24,setsar=1,format=yuv420p,setpts=PTS-STARTPTS"
+    filters = [
+        f"[0:v:0]{video_base}[v0]",
+        f"[1:v:0]{crop}{video_base}[v1]",
+    ]
+    for index, (label, info) in enumerate(zip(
+        audio_inputs, (original_info, segment_info)
+    )):
+        duration = max(0.001, float(info["duration"]))
+        filters.append(
+            f"{label}aresample=32000:async=1:first_pts=0,"
+            "aformat=sample_fmts=fltp:sample_rates=32000:channel_layouts=stereo,"
+            f"atrim=duration={duration:.6f},apad=whole_dur={duration:.6f},"
+            f"asetpts=PTS-STARTPTS[a{index}]"
+        )
+    filters.append("[v0][a0][v1][a1]concat=n=2:v=1:a=1[outv][outa]")
+    command += [
+        "-filter_complex", ";".join(filters),
+        "-map", "[outv]", "-map", "[outa]",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "16",
+        "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
+        "-ar", "32000", "-ac", "2", "-movflags", "+faststart", output_path,
+    ]
+    subprocess.run(command, check=True, capture_output=True, text=True, timeout=300)
+    restored = _probe_video(output_path)
+    if (restored["width"], restored["height"]) != (width, height):
+        raise RuntimeError("ErosMax concatenation changed the source dimensions.")
+    if not restored["has_audio"]:
+        raise RuntimeError("ErosMax concatenation did not produce the expected audio track.")
 
 
 # ErosMax Preview-only extension flash repair, ported from MiniMax H3 v11.
@@ -1262,22 +1377,22 @@ def h3_extend_generate(job_input):
             info = _probe_video(input_path)
             if info["duration"] <= 0 or info["duration"] > 120:
                 raise ValueError("Input video duration must be 0-120 seconds.")
-            if info["width"] % 16 or info["height"] % 16:
-                raise ValueError("Input video dimensions must be divisible by 16.")
-            # Keep the uploaded MP4 untouched. Only the temporary ComfyUI input
-            # needs 32-pixel alignment so 2x2 VAE latent patchification succeeds.
+            if info["width"] % 2 or info["height"] % 2:
+                raise ValueError("Input video width and height must both be even for H.264 output.")
+            # Keep the original MP4 intact. Align the temporary model input
+            # using edge-smear. Large sources also fit the 24GB inference budget.
             model_filename = filename
             model_info = info
-            pad = None
-            if info["width"] % 32 or info["height"] % 32:
+            plan = None
+            expected = _h3_extend_aligned_size(info["width"], info["height"])
+            if expected != (info["width"], info["height"]):
                 aligned_filename = f"eros_extend_align_{job_id}.mp4"
                 aligned_path = os.path.join(COMFYUI_DIR, "input", aligned_filename)
-                pad = _pad_h3_extend_source(
+                plan = _pad_h3_extend_source(
                     input_path, aligned_path, info["width"], info["height"]
                 )
                 model_filename = aligned_filename
                 model_info = _probe_video(aligned_path)
-                expected = _h3_extend_aligned_size(info["width"], info["height"])
                 if (model_info["width"], model_info["height"]) != expected:
                     raise RuntimeError("Temporary ErosMax aligned video has unexpected dimensions.")
             frame_cap = min(81, max(2, model_info["frames"]))
@@ -1323,15 +1438,18 @@ def h3_extend_generate(job_input):
             segment_path = os.path.join(temp_dir, "segment.mp4")
             with open(segment_path, "wb") as file:
                 file.write(base64.b64decode(segment_b64))
-            if pad is not None:
+            flash_requested = job_input.get("extension_flash_repair", False) is True
+            # Only flash repair needs a separate cropped file. Otherwise the
+            # final one-pass concatenation crops/resizes inline, with no extra
+            # H.264 generation-segment encoding.
+            if plan is not None and flash_requested:
                 cropped_segment = os.path.join(temp_dir, "segment_original_dimensions.mp4")
                 _crop_h3_extend_segment(
                     segment_path, cropped_segment,
-                    info["width"], info["height"], *pad,
+                    info["width"], info["height"], plan,
                 )
                 segment_path = cropped_segment
             raw_segment_path = segment_path
-            flash_requested = job_input.get("extension_flash_repair", False) is True
             if flash_requested:
                 try:
                     _log_extension_start_luma(raw_segment_path, "raw")
@@ -1346,7 +1464,25 @@ def h3_extend_generate(job_input):
             else:
                 print("[EROS EXTEND FLASH] off (Preview opt-in)", flush=True)
             combined = os.path.join(temp_dir, "extended.mp4")
-            _concat_extended_video(input_path, segment_path, combined)
+            if plan is not None:
+                try:
+                    _concat_extended_video_onepass(
+                        input_path, segment_path, combined,
+                        plan=None if flash_requested else plan,
+                    )
+                except (subprocess.CalledProcessError, RuntimeError) as exc:
+                    print(f"[EROS EXTEND ALIGN] one-pass concat fallback: {type(exc).__name__}", flush=True)
+                    # Recover with the established normalization path.
+                    fallback_segment = segment_path
+                    if not flash_requested:
+                        fallback_segment = os.path.join(temp_dir, "segment_fallback.mp4")
+                        _crop_h3_extend_segment(
+                            segment_path, fallback_segment,
+                            info["width"], info["height"], plan,
+                        )
+                    _concat_extended_video(input_path, fallback_segment, combined)
+            else:
+                _concat_extended_video(input_path, segment_path, combined)
             with open(combined, "rb") as file:
                 result_b64 = base64.b64encode(file.read()).decode("ascii")
             returned_outputs = [{
