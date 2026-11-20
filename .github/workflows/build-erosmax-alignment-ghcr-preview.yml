@@ -13,7 +13,6 @@ on:
       - extender_r2_io.py
       - eros_ref2va.py
       - lora_url_policy.py
-      - tests/test_eros_standard_extend_alignment.py
   workflow_dispatch:
 
 permissions:
@@ -35,9 +34,14 @@ jobs:
       - name: Check Python syntax
         run: |
           python -m py_compile handler.py h3_extender_poc.py registered_lora.py extender_r2_io.py eros_ref2va.py lora_url_policy.py tests/test_eros_standard_extend_alignment.py
-      - name: Run 32px alignment and FFmpeg contract tests
+      - name: Install FFmpeg and ffprobe for all regression tests
         run: |
-          ffmpeg -version | head -n 1
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+          command -v ffmpeg
+          command -v ffprobe
+      - name: Run all 32px alignment and FFmpeg contract tests
+        run: |
           python -m unittest discover -s tests -p 'test_eros_standard_extend_alignment.py' -v
 
   publish-preview:
