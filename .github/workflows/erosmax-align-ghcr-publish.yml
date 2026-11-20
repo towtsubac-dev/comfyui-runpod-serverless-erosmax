@@ -1,0 +1,46 @@
+name: ErosMax H3 Alignment - Isolated GHCR image
+on:
+  push:
+    branches:
+      - test/erosmax-align-ghcr-publish-20261120
+    paths:
+      - ".github/workflows/erosmax-align-ghcr-publish.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  code-overlay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout isolated alignment source
+        uses: actions/checkout@v4
+      - name: Verify pinned base and no heavyweight build steps
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q '^FROM --platform=linux/amd64 ghcr.io/towtsubac-dev/comfyui-runpod-serverless-erosmax@sha256:9ba7121bd64b86f798b97deaec7b1d1aca4bcfe9e64cc361046d50ee790111ff$' Dockerfile.eros-extend-alignment-preview
+          ! grep -q '^RUN ' Dockerfile.eros-extend-alignment-preview
+          python -m py_compile handler.py
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Rebase and push isolated versioned image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.eros-extend-alignment-preview
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          tags: ghcr.io/towtsubac-dev/comfyui-runpod-serverless-erosmax:eros-h3-align-178e7f8-preview-20261120
+      - name: Verify pushed tag
+        run: docker buildx imagetools inspect ghcr.io/towtsubac-dev/comfyui-runpod-serverless-erosmax:eros-h3-align-178e7f8-preview-20261120
