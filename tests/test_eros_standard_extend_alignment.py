@@ -169,6 +169,48 @@ class ErosExtensionAlignmentTest(unittest.TestCase):
         )
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"),"FFmpeg unavailable")
+    def test_extender_aligned_full_video_restores_native_size_and_audio(self):
+        import json
+        import types
+        with tempfile.TemporaryDirectory() as directory:
+            folder=pathlib.Path(directory)
+            original=folder/"original.mp4"
+            model_input=folder/"model_input.mp4"
+            restored=folder/"restored.mp4"
+            subprocess.run([
+                "ffmpeg","-y","-v","error","-f","lavfi",
+                "-i","testsrc2=size=320x176:rate=24:duration=0.6",
+                "-f","lavfi","-i","sine=frequency=440:sample_rate=32000:duration=0.6",
+                "-t","0.6","-c:v","libx264","-threads","1","-pix_fmt","yuv420p",
+                "-c:a","aac",str(original),
+            ],check=True,timeout=60)
+            env=dict(self.helpers)
+            def probe(path):
+                p=subprocess.run([
+                    "ffprobe","-v","error","-show_entries",
+                    "stream=codec_type,width,height:format=duration",
+                    "-of","json",str(path),
+                ],capture_output=True,text=True,check=True,timeout=20)
+                obj=json.loads(p.stdout)
+                video=next(s for s in obj["streams"] if s["codec_type"]=="video")
+                return {
+                    "width":video["width"],"height":video["height"],
+                    "duration":float(obj["format"]["duration"]),
+                    "has_audio":any(s["codec_type"]=="audio" for s in obj["streams"]),
+                }
+            env["_probe_video"]=probe
+            pad=types.FunctionType(env["_pad_h3_extend_source"].__code__,env)
+            restore=types.FunctionType(env["_crop_h3_extend_segment"].__code__,env)
+            plan=pad(str(original),str(model_input),320,176)
+            self.assertEqual((plan["width"],plan["height"]),(320,192))
+            self.assertEqual((probe(model_input)["width"],probe(model_input)["height"]),(320,192))
+            restore(str(model_input),str(restored),320,176,plan)
+            result=probe(restored)
+            self.assertEqual((result["width"],result["height"]),(320,176))
+            self.assertTrue(result["has_audio"])
+            self.assertGreater(result["duration"],0.5)
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"),"FFmpeg unavailable")
     def test_real_ffmpeg_edge_colors_audio_and_onepass_output(self):
         env=self.helpers
         with tempfile.TemporaryDirectory() as directory:
