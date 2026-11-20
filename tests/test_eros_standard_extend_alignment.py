@@ -91,6 +91,9 @@ class ErosExtensionAlignmentTest(unittest.TestCase):
         mock=Mock()
         mock.run.side_effect=lambda cmd, **kw: commands.append(cmd)
         env["subprocess"]=mock
+        import types
+        env["_pad_h3_extend_source"]=types.FunctionType(
+            env["_pad_h3_extend_source"].__code__,env)
         plan=env["_pad_h3_extend_source"]("original.mp4","aligned.mp4",720,1280)
         self.assertEqual((plan["width"],plan["height"]),(736,1280))
         cmd=commands[0]
@@ -113,6 +116,9 @@ class ErosExtensionAlignmentTest(unittest.TestCase):
         env["_probe_video"]=lambda path: (
             original if path=="src.mp4" or path=="out.mp4" else segment
         )
+        import types
+        env["_concat_extended_video_onepass"]=types.FunctionType(
+            env["_concat_extended_video_onepass"].__code__,env)
         plan=env["_h3_extend_geometry"](720,1280)
         env["_concat_extended_video_onepass"]("src.mp4","seg.mp4","out.mp4",plan)
         cmd=commands[0]
