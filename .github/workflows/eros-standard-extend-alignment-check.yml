@@ -1,0 +1,22 @@
+name: ErosMax standard extension 32px alignment (CPU smoke)
+on:
+  push:
+    branches:
+      - fix/erosmax-extension-32px-align-20261120
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-extension:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check handler and test syntax
+        run: python -m py_compile handler.py tests/test_eros_standard_extend_alignment.py
+      - name: Verify padding, restored resolution, audio and production routing
+        run: python -m unittest discover -s tests -p 'test_eros_standard_extend_alignment.py' -v
