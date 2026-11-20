@@ -13,6 +13,7 @@ TREE = ast.parse(SOURCE)
 NAMES = {
     "_h3_extend_aligned_size", "_h3_extend_geometry",
     "_pad_h3_extend_source", "_crop_h3_extend_segment",
+    "_add_silent_audio_to_h3_extend_source",
     "_concat_extended_video_onepass",
 }
 
@@ -189,6 +190,53 @@ class ErosExtensionAlignmentTest(unittest.TestCase):
             self.assertTrue(result["has_audio"])
             self.assertGreater(result["duration"],0.8)
             self.assertLess(result["duration"],1.3)
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"),"FFmpeg unavailable")
+    def test_video_only_input_gets_aac_audio_before_h3_loader(self):
+        # Public portrait samples are often video-only. VHS_LoadVideo needs
+        # an audio stream. Verify video stream-copy, silent AAC, then 32px pad.
+        import json
+        with tempfile.TemporaryDirectory() as directory:
+            folder=pathlib.Path(directory)
+            source=folder/"source.mp4"
+            with_audio=folder/"with_audio.mp4"
+            padded=folder/"padded.mp4"
+            subprocess.run([
+                "ffmpeg","-y","-v","error","-f","lavfi",
+                "-i","testsrc2=size=320x176:rate=24:duration=0.5",
+                "-an","-c:v","libx264","-threads","1",str(source),
+            ],check=True,timeout=60)
+            self.helpers["_add_silent_audio_to_h3_extend_source"](
+                str(source),str(with_audio),0.5
+            )
+            def _streams(path):
+                result=subprocess.run([
+                    "ffprobe","-v","error","-show_entries",
+                    "stream=codec_name,codec_type,width,height",
+                    "-of","json",str(path),
+                ],capture_output=True,text=True,check=True,timeout=20)
+                return json.loads(result.stdout)["streams"]
+            a=_streams(source)
+            b=_streams(with_audio)
+            self.assertEqual(len([s for s in a if s["codec_type"]=="audio"]),0)
+            self.assertEqual(len([s for s in b if s["codec_type"]=="audio"]),1)
+            self.assertEqual(next(s for s in b if s["codec_type"]=="audio")["codec_name"],"aac")
+            self.assertEqual(
+                next(s for s in a if s["codec_type"]=="video")["codec_name"],
+                next(s for s in b if s["codec_type"]=="video")["codec_name"],
+            )
+            self.helpers["_pad_h3_extend_source"](
+                str(with_audio),str(padded),320,176
+            )
+            streams=_streams(padded)
+            self.assertEqual(
+                (next(s for s in streams if s["codec_type"]=="video")["width"],
+                 next(s for s in streams if s["codec_type"]=="video")["height"]),
+                (320,192)
+            )
+            self.assertEqual(
+                len([s for s in streams if s["codec_type"]=="audio"]),1
+            )
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"),"FFmpeg unavailable")
     def test_real_ffmpeg_audio_absent_gets_silent_output(self):
