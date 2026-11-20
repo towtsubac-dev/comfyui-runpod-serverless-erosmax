@@ -39,6 +39,21 @@ class ErosExtensionAlignmentTest(unittest.TestCase):
     def setUpClass(cls):
         cls.helpers = load_helpers()
 
+    def test_signed_r2_preserves_flash_comparison_without_large_inline_payload(self):
+        # The full MP4 and optional NO_FLASH A/B file use independent
+        # signed R2 upload descriptors and small worker receipts.
+        fn = next(
+            n for n in TREE.body
+            if isinstance(n, ast.FunctionDef) and n.name == "h3_extend_generate"
+        )
+        code = ast.get_source_segment(SOURCE, fn)
+        self.assertIn('job_input.get("comparison_output_upload")', code)
+        self.assertIn('"comparison_r2_upload"', code)
+        self.assertIn('upload_r2_output(', code)
+        self.assertIn('job_input.get("extension_compare_flash")', code)
+        self.assertLess(code.index('if output_upload is not None:'),
+                        code.index('MAX_RUNPOD_INLINE_MP4_BYTES'))
+
     def test_common_sizes_and_inference_limit(self):
         align = self.helpers["_h3_extend_aligned_size"]
         expect = {
