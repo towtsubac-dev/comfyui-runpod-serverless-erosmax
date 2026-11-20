@@ -220,7 +220,7 @@ class ErosExtensionAlignmentTest(unittest.TestCase):
             env["_probe_video"]=_probe
             func=types.FunctionType(
                 env["_concat_extended_video_onepass"].__code__,env)
-            func(str(original),str(original),str(joined))
+            func(str(original),str(original),str(joined),None)
             self.assertTrue(_probe(joined)["has_audio"])
 
 
