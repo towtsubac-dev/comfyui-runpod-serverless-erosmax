@@ -94,8 +94,9 @@ def build_ref2va_workflow(filenames, *, prompt, model, clip, video_vae, audio_va
         raise ValueError("Ref2VA accepts 2–3 reference images")
     if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 12000:
         raise ValueError("Missing or oversized prompt")
-    if (width, height) not in SUPPORTED_SIZES or length != 124:
-        raise ValueError("Unsupported Ref2VA resolution or length")
+    # Match MiniMax native 17n+5 frame counts for nominal 3/5/8/10/15 seconds.
+    if (width, height) not in SUPPORTED_SIZES or length not in (73, 124, 192, 243, 362):
+        raise ValueError("Unsupported Ref2VA resolution or length (3/5/8/10/15 seconds)")
     if steps not in (8, 20):
         raise ValueError("Eros beta6 Ref2VA supports 8 or 20 steps")
     if ref_image_size not in ("match", "max"):
