@@ -1,0 +1,6 @@
+# Patch only the ErosMax native REF2VA module on top of the exact running Production image.
+# Avoid compiling SageAttention, downloading models or replacing any existing handler/R2 modules.
+FROM --platform=linux/amd64 ghcr.io/towtsubac-dev/comfyui-runpod-serverless-erosmax@sha256:8a0792e6d125437da048a8ce62317e9755d7919a7751bbaf50d42031a678683d
+COPY --link eros_ref2va.py /workspace/eros_ref2va.py
+WORKDIR /workspace
+CMD ["python", "/workspace/handler.py"]
