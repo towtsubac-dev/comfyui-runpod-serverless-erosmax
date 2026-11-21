@@ -61,6 +61,40 @@ class Ref2vaGraphTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             workflow(["a","b"], ref_image_size="big")
 
+    def test_ref2va_nominal_3_to_15_seconds_native_frame_counts(self):
+        for seconds, frames in ((3, 73), (5, 124), (8, 192), (10, 243), (15, 362)):
+            with self.subTest(seconds=seconds):
+                graph = workflow(["one.png", "two.png"], length=frames)
+                self.assertEqual(graph["6"]["inputs"]["length"], frames)
+                self.assertEqual((frames - 5) % 17, 0)
+
+    def test_ref2va_invalid_frame_counts_rejected(self):
+        for frames in (0, 5, 76, 125, 196, 244, 361, 363, 500):
+            with self.subTest(frames=frames):
+                with self.assertRaises(ValueError):
+                    workflow(["one.png", "two.png"], length=frames)
+
+    def test_15_seconds_generate_passes_362_frames_to_sampler(self):
+        im = Image.new("RGB", (256, 256), "green")
+        buf = io.BytesIO()
+        im.save(buf, "PNG")
+        data = base64.b64encode(buf.getvalue()).decode("ascii")
+        queued = []
+        with tempfile.TemporaryDirectory() as tmp:
+            result = generate(
+                {"reference_images": [{"image": data}, {"image": data}],
+                 "prompt": "Preserve both adult subjects.", "length": 362, "steps": 8},
+                comfyui_dir=tmp, **WEIGHTS,
+                ensure_comfyui=lambda: None,
+                upload_image=lambda raw, name: name,
+                queue_prompt=lambda graph: queued.append(graph) or "p1",
+                wait_for_result=lambda id, timeout: {"outputs": {}},
+                extract_outputs=lambda history: [{"filename": "ok.mp4", "type": "videos"}],
+                download_output=lambda item: "dGVzdC1tcDQ=",
+            )
+        self.assertEqual(result["reference_image_count"], 2)
+        self.assertEqual(queued[0]["6"]["inputs"]["length"], 362)
+
     def test_base64_images_sanitized_as_png(self):
         im = Image.new("RGB", (256, 256), "blue")
         buf = io.BytesIO()
