@@ -21,3 +21,14 @@ The official MiniMax H3 Community License excludes the USA, EU, UK and South Kor
 **Preflight status:** Python syntax and existing 720p test suite passed in GitHub Actions workflow run `45178520242`. Image build publication and actual GPU generation remain subject to verification.
 
 **Never start test jobs before v1.0 image publication and inspection.** A queued job with `maxWorkers=0` will not execute.
+
+## Verification after image publication (2026-11-23)
+
+- GitHub Actions run `45178520242`: preflight SUCCESS, publish SUCCESS.
+- Image digest: `sha256:128336c79a33b19a6387c429003aff935e251d4fa6c651e2c1bdba667b40ee26`.
+- Build log: Eros v1.0 Compact 14,499,096,990 bytes and the expected SHA256 check succeeded.
+- RunPod Endpoint `tesdb3yl2pdtle` successfully assigned `NVIDIA GeForce RTX 4090` in `EUR-NO-1`, GPU count 1.
+- Health job `3e30086f-b759-4cde-a8ad-38c642f9e3cf-u2` remained IN_QUEUE during initial GHCR image layer download/extraction. Multiple INITIALIZING/THROTTLED worker records appeared despite configured max=1; no Python/ComfyUI runtime error was observed.
+- To prevent excessive cold-start resource use, health job was explicitly CANCELLED and Endpoint `workers.max` was set back to 0. Verified no active workers.
+- **GPU inference, ComfyUI health and 720p/15s generation remain UNVERIFIED.** Do not claim production readiness.
+- Follow-up: investigate large GHCR image cold-start pull, distribution and cache, and ensure a single stable RTX 4090 worker before resuming the health test. Keep Production unchanged.
