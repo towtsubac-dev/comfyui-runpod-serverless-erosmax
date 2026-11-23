@@ -5,6 +5,7 @@ MiniMaxH3ReferenceToVideo ComfyUI API workflow, with flat dotted autogrow keys.
 Compatibility and identity fidelity must be established with an actual GPU run.
 """
 import base64
+from video_720p import apply_720p_crop
 import io
 import os
 import re
@@ -18,7 +19,7 @@ MAX_IMAGES = 3
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
 MAX_PIXELS = 12_000_000
 R2_HOST = re.compile(r"^[a-f0-9]{32}\.r2\.cloudflarestorage\.com$", re.I)
-SUPPORTED_SIZES = {(864, 480), (480, 864), (768, 768)}
+SUPPORTED_SIZES = {(864, 480), (480, 864), (768, 768), (1280, 736), (736, 1280)}
 
 
 def _image_from_url(url):
@@ -225,6 +226,7 @@ def generate(job_input, *, comfyui_dir, model, clip, video_vae, audio_vae,
                                          optional_loras=optional_loras)
         print("[Eros Ref2VA] model=" + model + " refs=" + str(len(uploaded))
               + " steps=" + str(steps) + " size=" + ref_size + " seed=" + str(seed), flush=True)
+        apply_720p_crop(workflow, width, height, job_input.get("output_resolution"))
         prompt_id = queue_prompt(workflow)
         history = wait_for_result(prompt_id, timeout=1800)
         outputs = []

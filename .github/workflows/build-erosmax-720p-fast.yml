@@ -1,0 +1,63 @@
+name: eros-720p-fast code-only Preview
+on:
+  push:
+    branches:
+      - feature/erosmax-720p-preview-20261123
+    paths:
+      - .github/workflows/build-erosmax-720p-fast.yml
+      - Dockerfile.720p-fast
+      - handler.py
+      - eros_ref2va.py
+      - video_720p.py
+      - tests/test_video_720p.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: eros-720p-fast-preview
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check modules
+        run: |
+          python3 -m py_compile handler.py eros_ref2va.py video_720p.py
+          python3 -m unittest discover -s tests -p 'test_video_720p.py' -v
+  publish:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Log into GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify model base
+        run: docker buildx imagetools inspect ghcr.io/towtsubac-dev/comfyui-runpod-serverless-erosmax@sha256:913e9e05292fa24d1bd4f0a67bf70155b7182244b5e5634dffb32291506b9b40
+      - name: Publish code-only 720p image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.720p-fast
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          sbom: false
+          tags: ghcr.io/${{ github.repository_owner }}/comfyui-runpod-serverless-erosmax:eros-720p-fast-${{ github.sha }}
+      - name: Verify publication
+        run: |
+          docker buildx imagetools inspect ghcr.io/${{ github.repository_owner }}/comfyui-runpod-serverless-erosmax:eros-720p-fast-${{ github.sha }}
+          echo "Published: ghcr.io/${{ github.repository_owner }}/comfyui-runpod-serverless-erosmax:eros-720p-fast-${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"
