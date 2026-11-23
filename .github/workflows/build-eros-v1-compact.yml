@@ -1,0 +1,69 @@
+name: ErosMax v1 Compact RTX4090 Preview Image
+on:
+  push:
+    branches:
+      - test/erosmax-v1-compact-rtx4090
+    paths:
+      - Dockerfile.eros-v1-compact
+      - download_models_v1.py
+      - handler.py
+      - video_720p.py
+      - eros_ref2va.py
+      - .github/workflows/build-eros-v1-compact.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: eros-v1-compact-preview
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python and model contract preflight
+        run: |
+          python3 -m py_compile handler.py download_models_v1.py video_720p.py eros_ref2va.py
+          grep -F 'v1.0_hybrid_activation_learned_compact_w4w6int8_14.50gb' handler.py
+          grep -F 'V1_SHA256 = "569f4337f6101b909c5fcf96efb207464a862a540394cff2723534caea4c73ed"' download_models_v1.py
+          grep -F 'branch v0.46.0' Dockerfile.eros-v1-compact
+          python3 -m unittest discover -s tests -p 'test_video_720p.py' -v
+
+  publish:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space for large model image
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /usr/local/share/powershell /opt/hostedtoolcache /usr/local/share/boost /usr/local/.ghcup
+          docker system prune -af || true
+          df -h /
+      - uses: docker/setup-buildx-action@v3
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish isolated v1 Compact
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.eros-v1-compact
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          sbom: false
+          tags: ghcr.io/towtsubac-dev/comfyui-runpod-serverless-erosmax:eros-v1-compact-${{ github.sha }}
+      - name: Verify image publication
+        run: |
+          docker buildx imagetools inspect ghcr.io/towtsubac-dev/comfyui-runpod-serverless-erosmax:eros-v1-compact-${{ github.sha }}
+          echo "v1 Compact image: eros-v1-compact-${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"
