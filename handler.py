@@ -14,7 +14,7 @@ from registered_lora import download_registered_lora
 COMFYUI_DIR = "/workspace/ComfyUI"
 COMFYUI_URL = "http://127.0.0.1:8188"
 
-DIFFUSION_MODEL = "10Eros_Max_h3_8stepTURBO_beta6_pruned_w4a8.safetensors"
+DIFFUSION_MODEL = "10Eros_Max_8stepTurbo_v1.0_hybrid_activation_learned_compact_w4w6int8_14.50gb.safetensors"
 TEXT_ENCODER = "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
 VIDEO_VAE = "minimax_h3_video_vae_int8_convrot.safetensors"
 AUDIO_VAE = "minimax_h3_audio_vae_fp32.safetensors"
@@ -1771,7 +1771,7 @@ def handler(job):
     try:
         if action == "health":
             ensure_comfyui()
-            return {"status": "ok", "message": "ComfyUI is running", "eros_extend_revision": "v13-isolated-flash-preview", "system_stats": requests.get(f"{COMFYUI_URL}/system_stats", timeout=30).json()}
+            return {"status": "ok", "message": "ComfyUI is running", "eros_extend_revision": "v13-isolated-flash-preview", "eros_model_revision": "v1.0-compact-w4w6int8", "model_filename": DIFFUSION_MODEL, "system_stats": requests.get(f"{COMFYUI_URL}/system_stats", timeout=30).json()}
         if action == "eros_ref2va_check":
             from eros_ref2va import check
             ensure_comfyui()
