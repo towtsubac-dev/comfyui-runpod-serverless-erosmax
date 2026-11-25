@@ -1632,7 +1632,7 @@ def h3_extender_probe():
 
 
 def h3_extender_generate(job_input):
-    """Isolated one-clip v3.0.14 Extender PoC, not used by Studio Production."""
+    """Production one-clip v3.0.14 Extender with source geometry preservation."""
     import glob
     import tempfile
     from h3_extender_poc import build_workflow, continuation_frame_plan
@@ -1659,6 +1659,8 @@ def h3_extender_generate(job_input):
     filename = f"eros_h3_extender_poc_{job_id}.mp4"
     output_prefix = f"ErosH3Extender_PoC_{job_id}"
     input_path = os.path.join(COMFYUI_DIR, "input", filename)
+    aligned_path = None
+    audio_path = None
     try:
         os.makedirs(os.path.dirname(input_path), exist_ok=True)
         if video_url:
@@ -1675,8 +1677,36 @@ def h3_extender_generate(job_input):
         meta = _probe_video(input_path)
         if not (0 < float(meta["duration"]) <= 120):
             raise ValueError("Source video must be 0-120 seconds.")
-        if int(meta["width"]) % 32 or int(meta["height"]) % 32:
-            raise ValueError("PoC requires source dimensions divisible by 32.")
+        # The Extender node requires a 32-pixel canvas. Align only the
+        # inference input; preserve the source MP4 and restore the *complete*
+        # generated movie to the exact source dimensions before returning it.
+        source_w, source_h = int(meta["width"]), int(meta["height"])
+        model_path = input_path
+        if not meta["has_audio"]:
+            audio_path = os.path.join(
+                COMFYUI_DIR, "input", f"eros_extender_audio_{job_id}.mp4"
+            )
+            _add_silent_audio_to_h3_extend_source(
+                input_path, audio_path, meta["duration"]
+            )
+            model_path = audio_path
+        geometry = _h3_extend_geometry(source_w, source_h)
+        needs_alignment = (
+            geometry["width"] != source_w or geometry["height"] != source_h
+        )
+        if needs_alignment:
+            aligned_path = os.path.join(
+                COMFYUI_DIR, "input", f"eros_extender_align_{job_id}.mp4"
+            )
+            _pad_h3_extend_source(
+                model_path, aligned_path, source_w, source_h
+            )
+            model_path = aligned_path
+        model_meta = _probe_video(model_path)
+        if (model_meta["width"], model_meta["height"]) != (
+            geometry["width"], geometry["height"]
+        ):
+            raise RuntimeError("Extender input alignment returned unexpected dimensions.")
         seed = int(job_input.get("seed", 123456))
         context_length = int(job_input.get("context_length", 5))
         frame_plan = continuation_frame_plan(seconds, context_length)
@@ -1686,10 +1716,10 @@ def h3_extender_generate(job_input):
         # these model-only patches per clip; do not chain global LoraLoader nodes.
         resolved_loras = optional_lora(job_input)
         workflow = build_workflow(
-            video_filename=filename,
+            video_filename=os.path.basename(model_path),
             prompt=prompt,
-            width=int(meta["width"]),
-            height=int(meta["height"]),
+            width=model_meta["width"],
+            height=model_meta["height"],
             seed=seed,
             model_filename=DIFFUSION_MODEL,
             clip_filename=TEXT_ENCODER,
@@ -1705,7 +1735,8 @@ def h3_extender_generate(job_input):
             f"[EROS EXTENDER POC] native VIDEO; ref2va; Motion Context ON; "
             f"context={context_length}; native_frames={frame_plan['native_frames']}; "
             f"expected_visible_frames={frame_plan['visible_frames']}; "
-            f"source={meta['width']}x{meta['height']}; "
+            f"source={source_w}x{source_h}; "
+            f"model={model_meta['width']}x{model_meta['height']}; "
             f"seed={seed}; loras={len(resolved_loras)}",
             flush=True,
         )
@@ -1728,9 +1759,28 @@ def h3_extender_generate(job_input):
                 f"ComfyUI output keys: {node_keys}"
             )
         final_path = max(candidates, key=os.path.getmtime)
+        if needs_alignment:
+            generated_meta = _probe_video(final_path)
+            if (generated_meta["width"], generated_meta["height"]) != (
+                geometry["width"], geometry["height"]
+            ):
+                raise RuntimeError(
+                    "Extender produced unexpected aligned output dimensions."
+                )
+            restored_path = os.path.join(
+                COMFYUI_DIR, "output", output_prefix + "_native.mp4"
+            )
+            # Retain source audio when present. The Extender's full-batch
+            # final video includes the original source and its continuation.
+            _crop_h3_extend_segment(
+                final_path, restored_path, source_w, source_h, geometry
+            )
+            final_path = restored_path
         result = {
             "status": "ok",
             "mode": "h3_extender_poc",
+            "source_resolution": [source_w, source_h],
+            "output_resolution": [source_w, source_h],
             "prompt_id": prompt_id,
             "node_revision": contract["upstream_sha"],
             "context_length": context_length,
@@ -1760,8 +1810,9 @@ def h3_extender_generate(job_input):
             }]
         return result
     finally:
-        if os.path.isfile(input_path):
-            os.remove(input_path)
+        for temporary in (input_path, aligned_path, audio_path):
+            if temporary and os.path.isfile(temporary):
+                os.remove(temporary)
 
 
 def handler(job):
