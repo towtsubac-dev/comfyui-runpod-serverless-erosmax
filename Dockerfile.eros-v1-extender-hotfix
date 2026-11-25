@@ -1,0 +1,20 @@
+# syntax=docker/dockerfile:1.7
+# Keep the published v1 model and runtime layers intact.
+ARG BASE_IMAGE=ghcr.io/towtsubac-dev/comfyui-runpod-serverless-erosmax:eros-v1-compact-48ed2bd12a20294ef1b10eefa059e8975301917f
+FROM python:3.12-slim AS extender
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN git init /extender && \
+    git -C /extender fetch --depth 1 https://github.com/tritant/ComfyUI_MiniMax_H3_Extender.git b3e23bded3bcfb2398ec2470943b35330c7faaff && \
+    git -C /extender checkout --detach FETCH_HEAD && \
+    test "$(git -C /extender rev-parse HEAD)" = "b3e23bded3bcfb2398ec2470943b35330c7faaff" && \
+    grep -F '__version__ = "3.0.14"' /extender/__init__.py && \
+    grep -F '"MiniMaxH3Extender": MiniMaxH3Extender' /extender/extender.py && \
+    grep -F '"MiniMaxH3MotionContextDiskFinalDecode": MiniMaxH3MotionContextDiskFinalDecode' /extender/motion_context_disk.py && \
+    python -m compileall -q /extender && \
+    find /extender -type d -name __pycache__ -prune -exec rm -rf {} + && \
+    rm -rf /extender/.git
+# imageio-ffmpeg is already installed by VideoHelperSuite in the v1 base.
+FROM ${BASE_IMAGE}
+COPY --link --from=extender /extender/ /workspace/ComfyUI/custom_nodes/ComfyUI_MiniMax_H3_Extender/
+WORKDIR /workspace
+CMD ["python", "/workspace/handler.py"]
