@@ -1,0 +1,56 @@
+name: ErosMax v1 Extender hotfix
+on:
+  push:
+    branches:
+      - fix/erosmax-v1-extender-prod-20261125
+    paths:
+      - Dockerfile.eros-v1-extender-hotfix
+      - Dockerfile.eros-v1-compact
+      - .github/workflows/build-eros-v1-extender-hotfix.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: eros-v1-extender-hotfix
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check existing video contracts
+        run: |
+          python3 -m py_compile handler.py h3_extender_poc.py video_720p.py eros_ref2va.py
+          python3 -m unittest discover -s tests -p 'test_video_720p.py' -v
+          grep -F 'b3e23bded3bcfb2398ec2470943b35330c7faaff' h3_extender_poc.py
+          grep -F 'b3e23bded3bcfb2398ec2470943b35330c7faaff' Dockerfile.eros-v1-compact
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Resolve deployed base digest
+        id: base
+        run: |
+          BASE=ghcr.io/towtsubac-dev/comfyui-runpod-serverless-erosmax:eros-v1-compact-48ed2bd12a20294ef1b10eefa059e8975301917f
+          DIGEST=$(docker buildx imagetools inspect "$BASE" | awk '/^Digest:/ {print $2; exit}')
+          test -n "$DIGEST"
+          echo "image=${BASE%:*}@$DIGEST" >> "$GITHUB_OUTPUT"
+      - name: Publish isolated Extender hotfix
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.eros-v1-extender-hotfix
+          platforms: linux/amd64
+          build-args: BASE_IMAGE=${{ steps.base.outputs.image }}
+          push: true
+          provenance: false
+          sbom: false
+          tags: ghcr.io/towtsubac-dev/comfyui-runpod-serverless-erosmax:eros-v1-extender-hotfix-${{ github.sha }}
+      - name: Verify publication
+        run: docker buildx imagetools inspect ghcr.io/towtsubac-dev/comfyui-runpod-serverless-erosmax:eros-v1-extender-hotfix-${{ github.sha }}
