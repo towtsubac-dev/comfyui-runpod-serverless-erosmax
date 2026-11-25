@@ -16,5 +16,6 @@ RUN git init /extender && \
 # imageio-ffmpeg is already installed by VideoHelperSuite in the v1 base.
 FROM ${BASE_IMAGE}
 COPY --link --from=extender /extender/ /workspace/ComfyUI/custom_nodes/ComfyUI_MiniMax_H3_Extender/
+COPY --link handler.py /workspace/handler.py
 WORKDIR /workspace
 CMD ["python", "/workspace/handler.py"]
