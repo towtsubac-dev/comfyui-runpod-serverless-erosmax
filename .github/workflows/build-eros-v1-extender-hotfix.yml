@@ -6,6 +6,9 @@ on:
     paths:
       - Dockerfile.eros-v1-extender-hotfix
       - Dockerfile.eros-v1-compact
+      - handler.py
+      - tests/test_h3_extender_poc.py
+      - tests/test_eros_standard_extend_alignment.py
       - .github/workflows/build-eros-v1-extender-hotfix.yml
   workflow_dispatch:
 permissions:
@@ -22,10 +25,15 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+      - name: Install FFmpeg for CPU regression tests
+        run: |
+          command -v ffmpeg && command -v ffprobe || (sudo apt-get update && sudo apt-get install -y ffmpeg)
       - name: Check existing video contracts
         run: |
           python3 -m py_compile handler.py h3_extender_poc.py video_720p.py eros_ref2va.py
           python3 -m unittest discover -s tests -p 'test_video_720p.py' -v
+          python3 -m unittest discover -s tests -p 'test_h3_extender_poc.py' -v
+          python3 -m unittest discover -s tests -p 'test_eros_standard_extend_alignment.py' -v
           grep -F 'b3e23bded3bcfb2398ec2470943b35330c7faaff' h3_extender_poc.py
           grep -F 'b3e23bded3bcfb2398ec2470943b35330c7faaff' Dockerfile.eros-v1-compact
       - uses: docker/setup-buildx-action@v3
