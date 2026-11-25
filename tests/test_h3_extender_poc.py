@@ -150,7 +150,25 @@ class ExtenderPocTests(unittest.TestCase):
         lib = (ROOT / "registered_lora.py").read_text(encoding="utf-8")
         self.assertIn("sha256", lib)
         self.assertIn("safetensors", lib)
-        self.assertIn("allow_redirects=False", lib)
+        self.assertIn("open_signed_lora(url, provider", lib)
+        policy = (ROOT / "lora_url_policy.py").read_text(encoding="utf-8")
+        self.assertIn("allow_redirects=False", policy)
+
+    def test_backend_aligns_unusual_portrait_sources_and_restores_output(self):
+        source = (ROOT / "handler.py").read_text(encoding="utf-8")
+        section = source.split("def h3_extender_generate(job_input):", 1)[1].split("def handler(job):", 1)[0]
+        self.assertNotIn("PoC requires source dimensions divisible by 32.", section)
+        self.assertIn("geometry = _h3_extend_geometry(source_w, source_h)", section)
+        self.assertIn("_pad_h3_extend_source(", section)
+        self.assertIn("_add_silent_audio_to_h3_extend_source(", section)
+        self.assertIn("video_filename=os.path.basename(model_path)", section)
+        self.assertIn("width=model_meta[\"width\"]", section)
+        self.assertIn("height=model_meta[\"height\"]", section)
+        self.assertIn("_crop_h3_extend_segment(", section)
+        self.assertLess(section.index("_pad_h3_extend_source("),section.index("queue_prompt(workflow)"))
+        self.assertLess(section.index("_crop_h3_extend_segment("),section.index("upload_r2_output(final_path"))
+        self.assertIn("for temporary in (input_path, aligned_path, audio_path)", section)
+        self.assertEqual(workflow(width=736,height=1280)["7"]["inputs"]["width"],736)
 
     def test_invalid_inputs_fail_early(self):
         for data in (
