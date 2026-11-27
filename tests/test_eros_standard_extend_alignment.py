@@ -54,6 +54,48 @@ class ErosExtensionAlignmentTest(unittest.TestCase):
         self.assertLess(code.index('if output_upload is not None:'),
                         code.index('MAX_RUNPOD_INLINE_MP4_BYTES'))
 
+    @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg unavailable")
+    def test_transient_chroma_at_join(self):
+        try:
+            import numpy as np
+        except ImportError:
+            self.skipTest("numpy unavailable")
+        import json
+        import os
+        names = {"_probe_video", "_transient_chroma_filters", "_extension_seam_filters",
+                 "_probe_extension_start_rgb", "_read_extension_source_tail_rgb",
+                 "_concat_extended_video_onepass", "_v10_flash_plan",
+                 "_v11_fade_flash_plan", "_v12_slow_fade_flash_plan",
+                 "_v13_isolated_flash_plan"}
+        module = ast.Module(body=[n for n in TREE.body if isinstance(n, ast.FunctionDef)
+                                  and n.name in names], type_ignores=[])
+        env = {"np": np, "os": os, "subprocess": subprocess, "json": json}
+        exec(compile(module, "handler.py", "exec"), env)
+        with tempfile.TemporaryDirectory() as directory:
+            source, segment, joined = [str(pathlib.Path(directory) / (s + ".mp4"))
+                                       for s in ("source", "segment", "joined")]
+            def clip(path, vf):
+                subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
+                                "smptebars=size=320x192:rate=24:duration=1", "-vf", vf,
+                                "-c:v", "libx264", "-pix_fmt", "yuv420p", path], check=True)
+            clip(source, "null")
+            clip(segment, "lutyuv=v='val+16':enable='lt(n,2)'")
+            filters = env["_extension_seam_filters"](segment, source)
+            self.assertEqual(len(filters), 2)
+            self.assertFalse(env["_extension_seam_filters"](source, source))
+            rgb = env["_probe_extension_start_rgb"](source)
+            tinted = env["_probe_extension_start_rgb"](segment)
+            self.assertFalse(env["_transient_chroma_filters"](rgb[:4], np.repeat(tinted[:1], 8, axis=0)))
+            self.assertFalse(env["_transient_chroma_filters"](tinted[:4], rgb))
+            env["_concat_extended_video_onepass"](source, segment, joined, None, filters)
+            info = env["_probe_video"](joined)
+            self.assertEqual((info["frames"], info["width"], info["height"]), (48, 320, 192))
+            self.assertTrue(info["has_audio"])
+            result = env["_probe_extension_start_rgb"](joined, count=48)
+            raw_error = np.abs(tinted[0] - rgb[0]).mean()
+            self.assertLess(np.abs(result[24] - rgb[0]).mean(), raw_error / 2)
+            self.assertLess(np.abs(result[28] - rgb[0]).mean(), raw_error / 2)
+
     def test_common_sizes_and_inference_limit(self):
         align = self.helpers["_h3_extend_aligned_size"]
         expect = {
@@ -136,7 +178,7 @@ class ErosExtensionAlignmentTest(unittest.TestCase):
         env["_concat_extended_video_onepass"]=types.FunctionType(
             env["_concat_extended_video_onepass"].__code__,env)
         plan=env["_h3_extend_geometry"](720,1280)
-        env["_concat_extended_video_onepass"]("src.mp4","seg.mp4","out.mp4",plan)
+        env["_concat_extended_video_onepass"]("src.mp4","seg.mp4","out.mp4",plan,())
         cmd=commands[0]
         fc=cmd[cmd.index("-filter_complex")+1]
         self.assertIn("crop=720:1280:8:0",fc)
@@ -257,7 +299,7 @@ class ErosExtensionAlignmentTest(unittest.TestCase):
             # The function's globals, rather than a separate source import, are explicit.
             func=types.FunctionType(
                 local["_concat_extended_video_onepass"].__code__,local)
-            func(str(original),str(padded),str(output),local["_h3_extend_geometry"](320,176))
+            func(str(original),str(padded),str(output),local["_h3_extend_geometry"](320,176),())
             result=_probe(output)
             self.assertEqual((result["width"],result["height"]),(320,176))
             self.assertTrue(result["has_audio"])
@@ -341,7 +383,7 @@ class ErosExtensionAlignmentTest(unittest.TestCase):
             env["_probe_video"]=_probe
             func=types.FunctionType(
                 env["_concat_extended_video_onepass"].__code__,env)
-            func(str(original),str(original),str(joined),None)
+            func(str(original),str(original),str(joined),None,())
             self.assertTrue(_probe(joined)["has_audio"])
 
 
