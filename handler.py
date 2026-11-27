@@ -760,7 +760,7 @@ def _crop_h3_extend_segment(source, destination, width, height, plan):
     print(f"[EROS EXTEND ALIGN] restored generated segment to {width}x{height}", flush=True)
 
 
-def _concat_extended_video_onepass(original_path, segment_path, output_path, plan=None):
+def _concat_extended_video_onepass(original_path, segment_path, output_path, plan=None, seam_filters=()):
     """Single video encoding: source + segment, optional inline crop/rescale.
 
     Audio is re-encoded only in this final output. A silent track is synthesized
@@ -796,7 +796,7 @@ def _concat_extended_video_onepass(original_path, segment_path, output_path, pla
     video_base = f"scale={width}:{height}:flags=lanczos,fps=24,setsar=1,format=yuv420p,setpts=PTS-STARTPTS"
     filters = [
         f"[0:v:0]{video_base}[v0]",
-        f"[1:v:0]{crop}{video_base}[v1]",
+        "[1:v:0]" + ",".join((*seam_filters, crop + video_base)) + "[v1]",
     ]
     for index, (label, info) in enumerate(zip(
         audio_inputs, (original_info, segment_info)
@@ -849,12 +849,14 @@ def _log_extension_start_luma(path, label, count=8):
     print(f"[EROS EXTEND FRAME] {label} first_{frames}_luma={means}", flush=True)
 
 
-def _probe_extension_start_rgb(path, count=12):
+def _probe_extension_start_rgb(path, count=12, geometry=None):
     """Decode the opening frames once so calibration never samples a flash by timestamp."""
     import numpy as np
+    crop = (f"crop={geometry['inner_width']}:{geometry['inner_height']}:"
+            f"{geometry['left']}:{geometry['top']}," if geometry else "")
     cmd = [
         "ffmpeg", "-v", "error", "-i", path, "-map", "0:v:0",
-        "-frames:v", str(count), "-vf", "scale=160:90,format=rgb24",
+        "-frames:v", str(count), "-vf", crop + "scale=160:90,format=rgb24",
         "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
     ]
     raw = subprocess.run(cmd, check=True, capture_output=True, timeout=60).stdout
@@ -864,19 +866,57 @@ def _probe_extension_start_rgb(path, count=12):
     return np.frombuffer(raw, dtype=np.uint8).reshape(-1, 90, 160, 3).astype(np.float32) / 255.0
 
 
-def _read_extension_source_last_rgb(path):
-    """Read the final decoded source frame, not a frame at an approximate timestamp."""
+def _read_extension_source_tail_rgb(path):
     import numpy as np
-    raw = subprocess.run(
-        ["ffmpeg", "-v", "error", "-i", path, "-map", "0:v:0",
-         "-vf", "scale=160:90,format=rgb24", "-f", "rawvideo",
-         "-pix_fmt", "rgb24", "pipe:1"],
-        check=True, capture_output=True, timeout=180,
-    ).stdout
+    args = ["ffmpeg", "-v", "error", "-i", path, "-map", "0:v:0",
+            "-vf", "scale=160:90,format=rgb24", "-f", "rawvideo", "pipe:1"]
     size = 160 * 90 * 3
-    if len(raw) < size or len(raw) % size:
-        raise ValueError("Cannot inspect final source frame")
-    return np.frombuffer(raw[-size:], dtype=np.uint8).reshape(90, 160, 3).astype(np.float32) / 255.0
+    for seek in (["-sseof", "-2"], []):
+        raw = subprocess.run(args[:3] + seek + args[3:], check=True,
+                             capture_output=True, timeout=180).stdout
+        if len(raw) >= 4 * size and len(raw) % size == 0:
+            break
+    if not raw or len(raw) % size:
+        raise ValueError("Cannot inspect source tail")
+    return np.frombuffer(raw[-4 * size:], dtype=np.uint8).reshape(-1, 90, 160, 3).astype(np.float32) / 255.0
+
+
+def _transient_chroma_filters(tail, frames):
+    """Correct only a global cast that returns to the source color in 1-4 frames."""
+    import numpy as np
+    if len(tail) < 4 or len(frames) < 8:
+        return []
+    # Four spatial regions guard against a moving colored object or a cut.
+    def regions(images):
+        rgb = images.reshape(len(images), 2, 45, 2, 80, 3).mean(axis=(2, 4))
+        y = rgb @ np.array([0.299, 0.587, 0.114])
+        return np.stack(((rgb[..., 2] - y) * 126.4,
+                         (rgb[..., 0] - y) * 159.8), axis=-1)
+
+    source = regions(tail)
+    baseline = np.median(source, axis=0)
+    if np.max(np.abs(source - baseline)) > 3:
+        return []
+    luma = np.array([0.299, 0.587, 0.114])
+    reference = tail[-1] @ luma
+    if reference.std() < 0.025:
+        return []
+    for frame in frames[:8]:
+        current = frame @ luma
+        if current.std() < 0.025 or np.corrcoef(reference.ravel(), current.ravel())[0, 1] < 0.85:
+            return []
+    delta = regions(frames[:8]) - baseline
+    filters = []
+    for i in range(5):
+        if np.max(np.abs(delta[i:i + 3])) <= 4:
+            return filters
+        shift = np.median(delta[i], axis=(0, 1))
+        amplitude = np.max(np.abs(shift))
+        if amplitude < 5 or amplitude > 28 or np.max(np.abs(delta[i] - shift)) > 5:
+            return []
+        u, v = np.rint(-shift).astype(int)
+        filters.append(f"lutyuv=u='clip(val+({u}),16,240)':v='clip(val+({v}),16,240)':enable='eq(n,{i})'")
+    return []
 
 
 def _v10_flash_plan(frames, source, label):
@@ -1187,51 +1227,27 @@ def _v13_isolated_flash_plan(frames, source):
     }
 
 
-def _repair_extension_start_flash(segment_path, temp_dir, label, original_path=None):
-    """Adjust only the Y plane before exposure recovery, preserving v5 motion."""
-    if original_path is None:
-        return segment_path
-    frames = _probe_extension_start_rgb(segment_path, count=18)
-    source = _read_extension_source_last_rgb(original_path)
-    plan = _v10_flash_plan(frames, source, label)
-    version = "v10"
+def _extension_seam_filters(segment_path, original_path, geometry=None):
+    frames = _probe_extension_start_rgb(segment_path, count=18, geometry=geometry)
+    tail = _read_extension_source_tail_rgb(original_path)
+    source = tail[-1]
+    plan = _v10_flash_plan(frames, source, "standard")
+
     if plan is None:
         plan = _v11_fade_flash_plan(frames, source)
-        version = "v11"
+
     if plan is None:
         plan = _v12_slow_fade_flash_plan(frames, source)
-        version = "v12"
+
     if plan is None:
         plan = _v13_isolated_flash_plan(frames, source)
-        version = "v13"
-    if plan is None:
-        print(
-            f"[EROS EXTEND FLASH] {label}: v10/v11/v12/v13 no confirmed exposure flash; unchanged",
-            flush=True,
-        )
-        return segment_path
-    start, anchor, offsets = plan["start"], plan["anchor"], plan["offsets"]
-    filters = [
-        f"lutyuv=y='clip(val+{offset},16,235)':enable='eq(n\\,{i})'"
-        for i, offset in enumerate(offsets, start=start)
-    ]
-    result = os.path.join(temp_dir, f"flash_repaired_{label}.mp4")
-    subprocess.run(
-        ["ffmpeg", "-y", "-i", segment_path, "-map", "0:v:0", "-map", "0:a:0?",
-         "-vf", ",".join(filters), "-c:v", "libx264", "-preset", "medium",
-         "-crf", "16", "-pix_fmt", "yuv420p", "-c:a", "copy",
-         "-movflags", "+faststart", result],
-        check=True, capture_output=True, text=True, timeout=300,
-    )
-    print(
-        f"[EROS EXTEND FLASH] {label}: {version} Y-only repair applied "
-        f"frames={start}..{anchor-1} offsets={offsets} "
-        f"source={plan['source_mean']:.4f} recovery={plan['recovery_mean']:.4f}; "
-        f"remaining motion and chroma unchanged",
-        flush=True,
-    )
-    _log_extension_start_luma(result, f"{label} post_repair")
-    return result
+
+
+    filters = []
+    if plan is not None:
+        for i, offset in enumerate(plan["offsets"], start=plan["start"]):
+            filters.append(f"lutyuv=y='clip(val+({offset}),16,235)':enable='eq(n,{i})'")
+    return filters + _transient_chroma_filters(tail, frames)
 
 
 def build_h3_extend_workflow(video_filename, prompt, length, skip_first_frames,
@@ -1475,47 +1491,26 @@ def h3_extend_generate(job_input):
             with open(segment_path, "wb") as file:
                 file.write(base64.b64decode(segment_b64))
             flash_requested = job_input.get("extension_flash_repair", False) is True
-            # Only flash repair needs a separate cropped file. Otherwise the
-            # final one-pass concatenation crops/resizes inline, with no extra
-            # H.264 generation-segment encoding.
-            if plan is not None and flash_requested:
-                cropped_segment = os.path.join(temp_dir, "segment_original_dimensions.mp4")
-                _crop_h3_extend_segment(
-                    segment_path, cropped_segment,
-                    info["width"], info["height"], plan,
-                )
-                segment_path = cropped_segment
-            raw_segment_path = segment_path
+            seam_filters = []
             if flash_requested:
                 try:
-                    _log_extension_start_luma(raw_segment_path, "raw")
-                    segment_path = _repair_extension_start_flash(
-                        raw_segment_path, temp_dir, "corrected", input_path
-                    )
+                    seam_filters = _extension_seam_filters(segment_path, input_path, plan)
                 except Exception as exc:
-                    # A detection/FFmpeg failure must never prevent a usable
-                    # extension from being returned; keep the original segment.
-                    print(f"[EROS EXTEND FLASH] repair failed; using original segment: {exc}", flush=True)
-                    segment_path = raw_segment_path
-            else:
-                print("[EROS EXTEND FLASH] off (Preview opt-in)", flush=True)
+                    print(f"[EROS EXTEND FLASH] analysis skipped: {exc}", flush=True)
             combined = os.path.join(temp_dir, "extended.mp4")
-            if plan is not None:
+            if plan is not None or seam_filters:
                 try:
                     _concat_extended_video_onepass(
-                        input_path, segment_path, combined,
-                        plan=None if flash_requested else plan,
+                        input_path, segment_path, combined, plan, seam_filters
                     )
                 except (subprocess.CalledProcessError, RuntimeError) as exc:
-                    print(f"[EROS EXTEND ALIGN] one-pass concat fallback: {type(exc).__name__}", flush=True)
-                    # Recover with the established normalization path.
+                    print(f"[EROS EXTEND ALIGN] one-pass concat fallback: {exc}", flush=True)
+                    seam_filters = []
                     fallback_segment = segment_path
-                    if not flash_requested:
+                    if plan:
                         fallback_segment = os.path.join(temp_dir, "segment_fallback.mp4")
-                        _crop_h3_extend_segment(
-                            segment_path, fallback_segment,
-                            info["width"], info["height"], plan,
-                        )
+                        _crop_h3_extend_segment(segment_path, fallback_segment,
+                                                info["width"], info["height"], plan)
                     _concat_extended_video(input_path, fallback_segment, combined)
             else:
                 _concat_extended_video(input_path, segment_path, combined)
@@ -1535,19 +1530,19 @@ def h3_extend_generate(job_input):
                     "status": "ok", "mode": "extend",
                     "prompt_id": prompt_id,
                     "flash_repair_requested": flash_requested,
-                    "flash_repair_applied": segment_path != raw_segment_path,
+                    "flash_repair_applied": bool(seam_filters),
                     "r2_upload": receipt, "outputs": [],
                 }
                 # The optional flash A/B comparison needs its own signed
                 # one-object R2 upload; never send a second base64 MP4.
                 if (job_input.get("extension_compare_flash") is True
-                        and flash_requested and segment_path != raw_segment_path):
+                        and flash_requested and bool(seam_filters)):
                     comparison_upload = job_input.get("comparison_output_upload")
                     if comparison_upload is not None:
                         try:
                             raw_combined = os.path.join(temp_dir, "extended_no_flash.mp4")
-                            _concat_extended_video(
-                                input_path, raw_segment_path, raw_combined
+                            _concat_extended_video_onepass(
+                                input_path, segment_path, raw_combined, plan
                             )
                             result["comparison_r2_upload"] = upload_r2_output(
                                 raw_combined, comparison_upload
@@ -1586,10 +1581,10 @@ def h3_extend_generate(job_input):
             # GPU inference. Keep the primary video if the second file is too
             # large for RunPod's inline job result.
             if (job_input.get("extension_compare_flash", False) is True
-                    and flash_requested and segment_path != raw_segment_path):
+                    and flash_requested and bool(seam_filters)):
                 try:
                     raw_combined = os.path.join(temp_dir, "extended_no_flash.mp4")
-                    _concat_extended_video(input_path, raw_segment_path, raw_combined)
+                    _concat_extended_video_onepass(input_path, segment_path, raw_combined, plan)
                     with open(raw_combined, "rb") as file:
                         raw_b64 = base64.b64encode(file.read()).decode("ascii")
                     if len(result_b64) + len(raw_b64) + 4096 <= MAX_RUNPOD_INLINE_RESULT_BYTES:
@@ -1607,7 +1602,7 @@ def h3_extend_generate(job_input):
             return {
                 "status": "ok", "mode": "extend", "prompt_id": prompt_id,
                 "flash_repair_requested": flash_requested,
-                "flash_repair_applied": segment_path != raw_segment_path,
+                "flash_repair_applied": bool(seam_filters),
                 "outputs": returned_outputs,
             }
         finally:
